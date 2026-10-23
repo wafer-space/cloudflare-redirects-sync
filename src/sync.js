@@ -1,16 +1,22 @@
-// Replace a Bulk Redirect list with the redirects.json a site serves, when
-// that file is newer than what the list holds.
+// The three operations behind the Worker's endpoints, for one list:
+//
+// - sourceRevision: fetch the redirects.json the site serves and return the
+//   revision it records;
+// - listRevision: return the revision the Cloudflare list holds;
+// - syncList: do both, and replace the list with the file when the file's
+//   revision is newer.
 //
 // The only state is the list itself. The first item of every redirects.json
 // is its revision: source <host>/revision, target the commit on GitHub, and
 // a comment starting with `git describe` (v0.0-<number>...). It is written in
 // the same replace as the redirects, so the list's own copy always says which
 // revision the list holds. A file whose number isn't higher than that is
-// ignored, so a late, cached or out-of-order copy never replaces a newer one.
+// never written, so a late, cached or out-of-order copy can't replace a newer
+// one.
 //
-// Nothing here retries: when the requested revision isn't published yet, or
-// another bulk operation is pending, the caller gets an error status and
-// retries (the deploy workflows do; the cron trigger simply runs again).
+// Nothing here retries: when another bulk operation is pending the caller
+// gets an error status and retries (the deploy workflows do; the cron
+// trigger simply runs again).
 
 import { fetchText } from "./cloudflare.js";
 
@@ -50,74 +56,92 @@ export function fileRevision(text, host) {
   }
 }
 
-// The revision the list's own revision item records, or null.
-async function listRevision(api, listId, host) {
-  const found = await api.searchItems(listId, `${host}/revision`);
-  return found.map((item) => parseRevision(item, host)).find(Boolean) ?? null;
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Returns [HTTP status, body]; never throws.
-export async function syncList(name, options) {
+// Each operation returns [HTTP status, body] and never throws.
+async function guarded(run) {
   try {
-    return await sync(name, options);
+    return await run();
   } catch (err) {
     return [500, { status: "error", error: err.message }];
   }
 }
 
-async function sync(name, { api, fetch, requested, force = false, wait = sleep }) {
+// The site's file and its revision, or { error: [status, body] }.
+async function fetchSource(name, { fetch }) {
   const { url, host } = LISTS[name];
-
   let text;
   try {
     text = await fetchText(url, { fetch });
   } catch (err) {
-    return [502, { status: "error", error: err.message }];
+    return { error: [502, { status: "error", error: err.message }] };
   }
-  const file = fileRevision(text, host);
-  if (!file) return [502, { status: "error", error: `${url} doesn't start with a ${host}/revision item` }];
+  const revision = fileRevision(text, host);
+  if (!revision) return { error: [502, { status: "error", error: `${url} doesn't start with a ${host}/revision item` }] };
+  return { text, revision };
+}
 
-  if (requested) {
-    if (file.number < requested.number) {
-      return [409, { status: "not_published", file, requested }];
-    }
-    if (file.number === requested.number && file.commit !== requested.commit) {
-      return [409, { status: "commit_mismatch", file, requested }];
-    }
-  }
-
+// The list's id and the revision its revision item records (or null).
+async function fetchList(name, { api }) {
+  const { host } = LISTS[name];
   const list = (await api.listLists()).find((l) => l.name === name && l.kind === "redirect");
-  if (!list) return [500, { status: "error", error: `no redirect list named ${name}` }];
-  const current = await listRevision(api, list.id, host);
+  if (!list) throw new Error(`no redirect list named ${name}`);
+  const found = await api.searchItems(list.id, `${host}/revision`);
+  return { id: list.id, revision: found.map((item) => parseRevision(item, host)).find(Boolean) ?? null };
+}
 
-  if (!force && current && file.number <= current.number) {
-    return [200, { status: file.number === current.number ? "up_to_date" : "list_is_newer", file, list: current }];
-  }
+// GET /source
+export function sourceRevision(name, { fetch }) {
+  return guarded(async () => {
+    const source = await fetchSource(name, { fetch });
+    return source.error ?? [200, { status: "ok", source: source.revision }];
+  });
+}
 
-  let operationId;
-  try {
-    operationId = await api.replaceItems(list.id, text);
-  } catch (err) {
-    if (err.isBusy) return [503, { status: "busy", error: err.message, file }];
-    throw err;
-  }
-  for (const delay of POLL_DELAYS) {
-    await wait(delay);
-    const op = await api.getOperation(operationId);
-    if (op.status === "failed") {
-      return [502, { status: "failed", error: op.error ?? "no error given", operation_id: operationId, file }];
+// GET /list
+export function listRevision(name, { api }) {
+  return guarded(async () => [200, { status: "ok", list: (await fetchList(name, { api })).revision }]);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// POST /sync
+export function syncList(name, { api, fetch, force = false, wait = sleep }) {
+  return guarded(async () => {
+    const source = await fetchSource(name, { fetch });
+    if (source.error) return source.error;
+    const { id, revision: current } = await fetchList(name, { api });
+    const result = { source: source.revision, list: current };
+
+    if (!force && current) {
+      if (source.revision.number === current.number && source.revision.commit !== current.commit) {
+        return [409, { status: "commit_mismatch", ...result }];
+      }
+      if (source.revision.number <= current.number) {
+        return [200, { status: source.revision.number === current.number ? "up_to_date" : "list_is_newer", ...result }];
+      }
     }
-    if (op.status !== "completed") continue;
-    // Another sync may have written between this one's check and its write,
-    // so return the revision read back from the list for the caller to check
-    // against the one it asked for.
-    const readback = await listRevision(api, list.id, host);
-    if (!readback) {
-      return [502, { status: "failed", error: "no revision item in the list after writing", file, previous: current }];
+
+    let operationId;
+    try {
+      operationId = await api.replaceItems(id, source.text);
+    } catch (err) {
+      if (err.isBusy) return [503, { status: "busy", error: err.message, ...result }];
+      throw err;
     }
-    return [200, { status: "applied", file, list: readback, previous: current }];
-  }
-  return [202, { status: "pending", operation_id: operationId, file }];
+    for (const delay of POLL_DELAYS) {
+      await wait(delay);
+      const op = await api.getOperation(operationId);
+      if (op.status === "failed") {
+        return [502, { status: "failed", error: op.error ?? "no error given", operation_id: operationId, ...result }];
+      }
+      if (op.status !== "completed") continue;
+      // Another sync may have written between this one's check and its
+      // write, so report what the list holds now, read back from Cloudflare.
+      const { revision: readback } = await fetchList(name, { api });
+      if (!readback) {
+        return [502, { status: "failed", error: "no revision item in the list after writing", ...result }];
+      }
+      return [200, { status: "applied", source: source.revision, list: readback, previous: current }];
+    }
+    return [202, { status: "pending", operation_id: operationId, ...result }];
+  });
 }

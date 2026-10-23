@@ -85,13 +85,14 @@ class Fake {
   }
 }
 
-const post = (query, headers = { authorization: "Bearer s3cret" }, method = "POST", path = "/sync") =>
+const call = (path, query, { method = path === "/sync" ? "POST" : "GET", headers = { authorization: "Bearer s3cret" } } = {}) =>
   new Request(`https://sync.example${path}${query}`, { method, headers });
 
-async function sync(fake, query) {
-  const res = await handleRequest(post(query), ENV, { fetch: fake.fetch, wait: noWait });
+async function request(fake, path, query, env = ENV) {
+  const res = await handleRequest(call(path, query), env, { fetch: fake.fetch, wait: noWait });
   return [res.status, await res.json()];
 }
+const sync = (fake, query) => request(fake, "/sync", query);
 
 test("parseRevision reads the number and commit", () => {
   assert.deepEqual(parseRevision(revision("wafer.space", 474, sha("c"), "-gcccccccc"), "wafer.space"), {
@@ -142,12 +143,47 @@ test("fileRevision rejects files that don't start with a revision item", () => {
   }
 });
 
+test("GET /source returns the site file's revision without calling Cloudflare", async () => {
+  const fake = new Fake();
+  const [status, body] = await request(fake, "/source", "?list=wafer_space");
+  assert.equal(status, 200);
+  assert.deepEqual(body.source, { number: 10, commit: sha("a"), comment: "v0.0-10" });
+  assert.ok(!fake.requests.some((r) => r.url.includes("api.cloudflare.com")));
+});
+
+test("GET /source reports a file without a revision as a 502", async () => {
+  const fake = new Fake();
+  fake.files["https://wafer.space/redirects.json"] = "[]";
+  const [status, body] = await request(fake, "/source", "?list=wafer_space");
+  assert.deepEqual([status, body.status], [502, "error"]);
+});
+
+test("GET /list returns the list's revision, or null for an empty list, without fetching the site", async () => {
+  const fake = new Fake();
+  let [status, body] = await request(fake, "/list", "?list=wafer_space");
+  assert.deepEqual([status, body.list], [200, null]);
+  await sync(fake, "?list=wafer_space");
+  fake.requests = [];
+  [status, body] = await request(fake, "/list", "?list=wafer_space");
+  assert.deepEqual([status, body.list.number], [200, 10]);
+  assert.ok(fake.requests.every((r) => r.url.includes("api.cloudflare.com")));
+  assert.deepEqual(fake.writes(), []);
+});
+
+test("GET /list for a missing list is a 500", async () => {
+  const fake = new Fake();
+  fake.lists = [];
+  const [status, body] = await request(fake, "/list", "?list=wafer_space");
+  assert.equal(status, 500);
+  assert.match(body.error, /no redirect list named wafer_space/);
+});
+
 test("a first sync writes the file exactly as served", async () => {
   const fake = new Fake();
   const [status, body] = await sync(fake, "?list=wafer_space");
   assert.equal(status, 200, JSON.stringify(body));
   assert.equal(body.status, "applied");
-  assert.equal(body.file.number, 10);
+  assert.equal(body.source.number, 10);
   assert.equal(body.previous, null);
   assert.equal(fake.putBody, fake.files["https://wafer.space/redirects.json"]);
   assert.equal(fake.items.L2.length, 0);
@@ -159,6 +195,7 @@ test("a sync with the same revision writes nothing", async () => {
   fake.requests = [];
   const [status, body] = await sync(fake, "?list=wafer_space");
   assert.deepEqual([status, body.status], [200, "up_to_date"]);
+  assert.equal(body.list.number, 10);
   assert.deepEqual(fake.writes(), []);
 });
 
@@ -169,6 +206,17 @@ test("an older file never replaces a newer list", async () => {
   fake.requests = [];
   const [status, body] = await sync(fake, "?list=wafer_space");
   assert.deepEqual([status, body.status], [200, "list_is_newer"]);
+  assert.deepEqual([body.source.number, body.list.number], [9, 10]);
+  assert.deepEqual(fake.writes(), []);
+});
+
+test("the same number with a different commit is a 409 and writes nothing", async () => {
+  const fake = new Fake();
+  await sync(fake, "?list=wafer_space");
+  fake.files["https://wafer.space/redirects.json"] = file("wafer.space", 10, sha("e"));
+  fake.requests = [];
+  const [status, body] = await sync(fake, "?list=wafer_space");
+  assert.deepEqual([status, body.status], [409, "commit_mismatch"]);
   assert.deepEqual(fake.writes(), []);
 });
 
@@ -181,50 +229,15 @@ test("force rewrites the list anyway", async () => {
   assert.equal(parseRevision(fake.items.L1[0], "wafer.space").number, 9);
 });
 
-test("a newer file replaces the list", async () => {
+test("a newer file replaces the list, and the readback is reported", async () => {
   const fake = new Fake();
   await sync(fake, "?list=wafer_space");
   fake.files["https://wafer.space/redirects.json"] = file("wafer.space", 11, sha("d"));
+  fake.requests = [];
   const [status, body] = await sync(fake, "?list=wafer_space");
   assert.deepEqual([status, body.status], [200, "applied"]);
-  assert.equal(body.previous.number, 10);
-});
-
-test("a requested revision that isn't published yet is a 409 and writes nothing", async () => {
-  const fake = new Fake();
-  const [status, body] = await sync(fake, `?list=wafer_space&number=11&commit=${sha("d")}`);
-  assert.deepEqual([status, body.status], [409, "not_published"]);
-  assert.deepEqual(body.requested, { number: 11, commit: sha("d") });
-  assert.deepEqual(fake.writes(), []);
-  assert.ok(!fake.requests.some((r) => r.url.includes("api.cloudflare.com")));
-});
-
-test("a requested revision with a different commit is a 409", async () => {
-  const fake = new Fake();
-  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("e")}`);
-  assert.deepEqual([status, body.status], [409, "commit_mismatch"]);
-  assert.deepEqual(fake.writes(), []);
-});
-
-test("the requested revision is applied", async () => {
-  const fake = new Fake();
-  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("a")}`);
-  assert.deepEqual([status, body.status], [200, "applied"]);
-});
-
-test("a file newer than the requested revision is applied", async () => {
-  const fake = new Fake();
-  const [status, body] = await sync(fake, `?list=wafer_space&number=8&commit=${sha("8")}`);
-  assert.deepEqual([status, body.status], [200, "applied"]);
-  assert.equal(body.file.number, 10);
-});
-
-test("an applied write reports the revision read back from the list", async () => {
-  const fake = new Fake();
-  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("a")}`);
-  assert.deepEqual([status, body.status], [200, "applied"]);
-  assert.equal(body.list.number, 10);
-  assert.equal(body.list.commit, sha("a"));
+  assert.deepEqual([body.previous.number, body.source.number, body.list.number], [10, 11, 11]);
+  assert.equal(body.list.commit, sha("d"));
   const reads = fake.requests.filter((r) => r.url.includes("/items?"));
   assert.equal(reads.length, 2, "one search before the write, one after");
   const siteFetches = fake.requests.filter((r) => !r.url.includes("api.cloudflare.com"));
@@ -236,10 +249,9 @@ test("an older write landing straight after shows in the readback", async () => 
   fake.afterComplete = () => {
     fake.items.L1 = JSON.parse(file("wafer.space", 9, sha("9")));
   };
-  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("a")}`);
+  const [status, body] = await sync(fake, "?list=wafer_space");
   assert.deepEqual([status, body.status], [200, "applied"]);
-  assert.equal(body.file.number, 10);
-  assert.equal(body.list.number, 9);
+  assert.deepEqual([body.source.number, body.list.number], [10, 9]);
 });
 
 test("no revision item after the write is a 502", async () => {
@@ -249,14 +261,6 @@ test("no revision item after the write is a 502", async () => {
   };
   const [status, body] = await sync(fake, "?list=wafer_space");
   assert.deepEqual([status, body.status], [502, "failed"]);
-});
-
-test("responses with nothing to do report the list's revision too", async () => {
-  const fake = new Fake();
-  await sync(fake, "?list=wafer_space");
-  const [, body] = await sync(fake, "?list=wafer_space");
-  assert.equal(body.status, "up_to_date");
-  assert.equal(body.list.number, 10);
 });
 
 test("a pending bulk operation is a 503, without retrying", async () => {
@@ -299,7 +303,7 @@ for (const [name, body] of [
   });
 }
 
-test("a missing list is a 500", async () => {
+test("a sync to a missing list is a 500", async () => {
   const fake = new Fake();
   fake.lists = [];
   const [status, body] = await sync(fake, "?list=wafer_space");
@@ -309,28 +313,31 @@ test("a missing list is a 500", async () => {
 
 test("missing secrets are a 500 without calling Cloudflare", async () => {
   const fake = new Fake();
-  const res = await handleRequest(post("?list=wafer_space"), { SYNC_SECRET: "s3cret" }, { fetch: fake.fetch, wait: noWait });
-  assert.equal(res.status, 500);
+  for (const path of ["/list", "/sync"]) {
+    const [status] = await request(fake, path, "?list=wafer_space", { SYNC_SECRET: "s3cret" });
+    assert.equal(status, 500, path);
+  }
   assert.ok(!fake.requests.some((r) => r.url.includes("api.cloudflare.com")));
 });
 
-for (const [name, request, env, status] of [
-  ["another path", post("?list=wafer_space", undefined, "POST", "/"), ENV, 404],
-  ["GET /sync", post("?list=wafer_space", undefined, "GET"), ENV, 405],
-  ["no token", post("?list=wafer_space", {}), ENV, 401],
-  ["a wrong token", post("?list=wafer_space", { authorization: "Bearer nope" }), ENV, 401],
-  ["a token without Bearer", post("?list=wafer_space", { authorization: "s3cret" }), ENV, 401],
-  ["an unset SYNC_SECRET", post("?list=wafer_space", { authorization: "Bearer " }), { ...ENV, SYNC_SECRET: undefined }, 401],
-  ["no list", post(""), ENV, 400],
-  ["an unknown list", post("?list=other"), ENV, 400],
-  ["a list named like an Object property", post("?list=toString"), ENV, 400],
-  ["a number without a commit", post("?list=wafer_space&number=3"), ENV, 400],
-  ["a short commit", post("?list=wafer_space&number=3&commit=abc"), ENV, 400],
-  ["a non-numeric number", post(`?list=wafer_space&number=x&commit=${sha("a")}`), ENV, 400],
+for (const [name, req, env, status] of [
+  ["another path", call("/", "?list=wafer_space"), ENV, 404],
+  ["GET /sync", call("/sync", "?list=wafer_space", { method: "GET" }), ENV, 405],
+  ["POST /source", call("/source", "?list=wafer_space", { method: "POST" }), ENV, 405],
+  ["POST /list", call("/list", "?list=wafer_space", { method: "POST" }), ENV, 405],
+  ["no token", call("/sync", "?list=wafer_space", { headers: {} }), ENV, 401],
+  ["no token on GET /source", call("/source", "?list=wafer_space", { headers: {} }), ENV, 401],
+  ["no token on GET /list", call("/list", "?list=wafer_space", { headers: {} }), ENV, 401],
+  ["a wrong token", call("/sync", "?list=wafer_space", { headers: { authorization: "Bearer nope" } }), ENV, 401],
+  ["a token without Bearer", call("/sync", "?list=wafer_space", { headers: { authorization: "s3cret" } }), ENV, 401],
+  ["an unset SYNC_SECRET", call("/sync", "?list=wafer_space", { headers: { authorization: "Bearer " } }), { ...ENV, SYNC_SECRET: undefined }, 401],
+  ["no list", call("/sync", ""), ENV, 400],
+  ["an unknown list", call("/source", "?list=other"), ENV, 400],
+  ["a list named like an Object property", call("/list", "?list=toString"), ENV, 400],
 ]) {
   test(`the handler answers ${name} with ${status} and fetches nothing`, async () => {
     const fake = new Fake();
-    const res = await handleRequest(request, env, { fetch: fake.fetch, wait: noWait });
+    const res = await handleRequest(req, env, { fetch: fake.fetch, wait: noWait });
     assert.equal(res.status, status);
     assert.deepEqual(fake.requests, []);
   });

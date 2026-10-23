@@ -1,13 +1,20 @@
 // redirects-sync: loads the redirects.json files that wafer.space and
 // preview.wafer.space serve into the wafer_space and preview_wafer_space
-// Bulk Redirect lists. Runs on a cron trigger, and on POST /sync from the
-// deploy workflows.
+// Bulk Redirect lists. Runs on a cron trigger, and on requests from the
+// deploy workflows:
+//
+//   GET  /source?list=<name>  the revision the site's redirects.json records
+//   GET  /list?list=<name>    the revision the Cloudflare list holds
+//   POST /sync?list=<name>    both, then replace the list if the site's
+//                             revision is newer ([&force=1]: even if not)
+//
+// Every request needs `Authorization: Bearer <SYNC_SECRET>`.
 //
 // Secrets: CF_API_TOKEN (Account Filter Lists Edit), CF_ACCOUNT_ID, and
-// SYNC_SECRET (the bearer token POST /sync must send).
+// SYNC_SECRET.
 
 import { CloudflareApi } from "./cloudflare.js";
-import { LISTS, syncList } from "./sync.js";
+import { LISTS, listRevision, sourceRevision, syncList } from "./sync.js";
 
 const json = (body, status, headers) => Response.json(body, { status, headers });
 
@@ -29,45 +36,34 @@ function makeApi(env, fetch) {
   return new CloudflareApi({ token: env.CF_API_TOKEN, accountId: env.CF_ACCOUNT_ID, fetch });
 }
 
-// POST /sync?list=<name>[&number=<n>&commit=<sha>][&force=1]
-//
-// With number and commit (the revision just deployed), 409 means the site
-// isn't serving that revision yet: retry. 503 means another bulk operation is
-// pending: retry. 200 covers applied, already up to date, and superseded by a
-// newer revision; 202 means Cloudflare accepted the write but hadn't finished
-// it when the Worker stopped waiting.
+const ROUTES = {
+  "/source": { method: "GET", run: (name, deps) => sourceRevision(name, deps) },
+  "/list": { method: "GET", run: (name, deps) => listRevision(name, { api: deps.api() }) },
+  "/sync": { method: "POST", run: (name, deps) => syncList(name, { ...deps, api: deps.api() }) },
+};
+
 export async function handleRequest(request, env, { fetch = globalThis.fetch, wait } = {}) {
   const url = new URL(request.url);
-  if (url.pathname !== "/sync") return json({ error: "not found" }, 404);
-  if (request.method !== "POST") {
-    return json({ error: "use POST" }, 405, { allow: "POST" });
+  const route = ROUTES[url.pathname];
+  if (!route) return json({ error: "not found" }, 404);
+  if (request.method !== route.method) {
+    return json({ error: `use ${route.method}` }, 405, { allow: route.method });
   }
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
   if (!(await secretMatches(token, env.SYNC_SECRET))) return json({ error: "unauthorized" }, 401);
 
-  const params = url.searchParams;
-  const name = params.get("list");
+  const name = url.searchParams.get("list");
   if (!Object.hasOwn(LISTS, name ?? "")) {
     return json({ error: `list must be one of ${Object.keys(LISTS).join(", ")}` }, 400);
   }
-  let requested = null;
-  if (params.has("number") || params.has("commit")) {
-    const number = params.get("number") ?? "";
-    const commit = params.get("commit") ?? "";
-    if (!/^\d+$/.test(number) || !/^[0-9a-f]{40}$/.test(commit)) {
-      return json({ error: "number must be digits and commit a full 40-character hash, given together" }, 400);
-    }
-    requested = { number: Number(number), commit };
-  }
-
-  let api;
+  let status, body;
   try {
-    api = makeApi(env, fetch);
+    const deps = { fetch, wait, force: url.searchParams.get("force") === "1", api: () => makeApi(env, fetch) };
+    [status, body] = await route.run(name, deps);
   } catch (err) {
-    return json({ list: name, status: "error", error: err.message }, 500);
+    [status, body] = [500, { status: "error", error: err.message }];
   }
-  const [status, body] = await syncList(name, { api, fetch, requested, force: params.get("force") === "1", wait });
   return json({ list: name, ...body }, status);
 }
 

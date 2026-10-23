@@ -41,48 +41,52 @@ which revision it holds; no other state is kept. (It also makes
 `https://wafer.space/revision` a link to the commit the live redirects came
 from.)
 
-The Worker only replaces a list with a file whose number is higher than the
-list's. That covers:
+## Endpoints
 
-- **Publishing delays.** A sync request names the revision just deployed. If
-  the site still serves an older file, the Worker answers 409
-  `not_published` and the caller retries.
-- **Caches.** Files are fetched with a cache-busting query string and
-  `cache: "no-store"`; a stale copy that still gets through has a lower
-  number and is ignored.
-- **Calls out of order.** A late request for an older revision finds the
-  list newer and does nothing (`list_is_newer`). Cloudflare runs one bulk
-  operation per account at a time, but an older write can still land just
-  after a newer one, if the newer one finishes between the older sync's
-  check and its write. So after every write the Worker reads the revision
-  item back from the list and returns it as `list`; the caller checks it
-  holds at least the revision it asked for, and retries if not. If the newer
-  sync read back before the older write landed, the list's revision item
-  still truthfully shows the older revision, and the next cron run restores
-  the newer one.
+Every request needs `Authorization: Bearer <SYNC_SECRET>`, and `list` is
+`wafer_space` or `preview_wafer_space`.
 
-## When it runs
+| Endpoint | Does |
+| --- | --- |
+| `GET /source?list=<name>` | Fetches the site's `redirects.json` and returns its revision as `source`. |
+| `GET /list?list=<name>` | Returns the revision the Cloudflare list holds as `list` (`null` if it has none). |
+| `POST /sync?list=<name>` | Both, then replaces the list with the file if the file's revision is newer. `force=1` replaces it regardless. |
 
-- Every 5 minutes, on a cron trigger, for both lists.
-- On `POST /sync?list=<name>&number=<n>&commit=<sha>` with
-  `Authorization: Bearer <SYNC_SECRET>`, which the site's deploy workflows
-  send after each deploy, with the revision they deployed. `number` and
-  `commit` are optional; `force=1` replaces the list even if it isn't older.
+A 5-minute cron trigger runs the sync for both lists.
 
-The Worker never retries. Its answers:
+`POST /sync` never writes an older or equal revision, and never retries. Its
+answers, each with the `source` and `list` revisions:
 
 | Status | `status` | Meaning |
 | --- | --- | --- |
 | 200 | `applied` | The file was written; `list` is the revision read back from the list afterwards. |
-| 200 | `up_to_date`, `list_is_newer` | Nothing to do; `list` is the list's revision. |
+| 200 | `up_to_date`, `list_is_newer` | Nothing to do. |
 | 202 | `pending` | Cloudflare accepted the write but hadn't finished it when the Worker stopped waiting. |
-| 409 | `not_published` | The site doesn't serve the requested revision yet: retry. |
-| 409 | `commit_mismatch` | The site serves a different commit at the requested number. |
+| 409 | `commit_mismatch` | The site and the list have the same number with different commits. |
 | 503 | `busy` | Another bulk operation is pending: retry. |
 | 502 | `error`, `failed` | The file couldn't be fetched or has no revision item first, Cloudflare's operation failed, or the list had no revision item after writing. |
 
-Callers that name a revision should treat a 200 whose `list.number` is lower
-than the one they asked for as "retry".
+## Delays, caches and calls out of order
+
+The site's deploy workflows run a client that, for the revision they just
+deployed:
+
+1. polls `GET /source` until the site serves that revision or a newer one
+   (GitHub Pages can take minutes to publish, and caches can serve an older
+   copy for a while);
+2. calls `POST /sync`, retrying while it's `busy` or `pending`;
+3. checks `GET /list` holds that revision or a newer one, and goes back to
+   step 2 if not.
+
+Files are fetched with a cache-busting query string and `cache: "no-store"`;
+a stale copy that still gets through has a lower number and is never
+written. A late sync for an older revision finds the list newer and does
+nothing. Cloudflare runs one bulk operation per account at a time, but an
+older write can still land just after a newer one, if the newer one
+finishes between the older sync's check and its write; step 3 catches that
+when it runs after the older write. Otherwise the list's revision item still
+truthfully shows the older revision, and the next cron run restores the
+newer one.
 
 ## Code
 
