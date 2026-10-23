@@ -57,18 +57,19 @@ Create Token > Create Custom Token**, and give it:
   policy whose resource is the account, and zone permissions on one whose
   resource is the zone:
 
-  | Policy resource | Permissions | For |
-  | --- | --- | --- |
-  | The account (Include, Specific account) | Account API Tokens Write | Creating the Worker's two tokens |
-  | | Account Rule Lists Write | The redirect lists |
-  | | Mass URL Redirects Write | The Bulk Redirect rules |
-  | | Workers Scripts Write | The workers.dev subdomain |
-  | The `wafer.space` zone (Include, Specific zone) | Zone Read | Finding the zone |
-  | | DNS Write | Proxying `preview.wafer.space` |
-  | | Cache Settings Write | The cache rule |
+  | Policy resource | Permission | Tick | For |
+  | --- | --- | --- | --- |
+  | The account (Include, Specific account) | Account API Tokens | Edit | Creating the Worker's two tokens |
+  | | Account Rule Lists | Edit | The redirect lists |
+  | | Mass URL Redirects | Edit | The Bulk Redirect rules |
+  | | Workers Scripts | Edit | The workers.dev subdomain |
+  | The `wafer.space` zone (Include, Specific zone) | Zone | Read | Finding the zone |
+  | | DNS | Edit | Proxying `preview.wafer.space` |
+  | | Cache Settings | Edit | The cache rule |
 
-  These are the names Cloudflare's API lists (some of its docs use older
-  names, such as Account Filter Lists, Bulk URL Redirects and Cache Rules).
+  Once saved, the token's summary and Cloudflare's API show Edit as Write
+  (for example "Account Rule Lists Write"). Some of Cloudflare's docs use
+  older names: Account Filter Lists, Bulk URL Redirects and Cache Rules.
   Leave out everything else.
 - **TTL:** end tomorrow, so it stops working even if it isn't deleted.
 
@@ -77,7 +78,7 @@ creates more than the permissions above, and you can't give it more than
 your own.
 
 If creating the Bulk Redirect rules still fails with an authentication
-error, add Account Rulesets Write to the account policy.
+error, add Account Rulesets (Edit) to the account policy.
 
 ## 2. See what would change
 

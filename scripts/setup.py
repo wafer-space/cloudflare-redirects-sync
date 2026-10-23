@@ -414,13 +414,13 @@ class Setup:
         self.check_token()
         self.find_account()
         account, zone_policy = "on the account policy", "on the wafer.space zone policy"
-        self.needs(f"Workers Scripts Write {account}", self.workers_subdomain)
-        self.needs(f"Account Rule Lists Write {account}", self.lists)
-        self.needs(f"Mass URL Redirects Write {account}", self.redirect_rules)
-        zone = self.needs(f"Zone Read {zone_policy}", self.find_zone)
-        self.needs(f"DNS Write {zone_policy}", self.preview_proxied, zone)
-        self.needs(f"Cache Settings Write {zone_policy}", self.preview_cache_rule, zone)
-        created, old = self.needs(f"Account API Tokens Write {account}", self.tokens)
+        self.needs(f"Workers Scripts (Edit) {account}", self.workers_subdomain)
+        self.needs(f"Account Rule Lists (Edit) {account}", self.lists)
+        self.needs(f"Mass URL Redirects (Edit) {account}", self.redirect_rules)
+        zone = self.needs(f"Zone (Read) {zone_policy}", self.find_zone)
+        self.needs(f"DNS (Edit) {zone_policy}", self.preview_proxied, zone)
+        self.needs(f"Cache Settings (Edit) {zone_policy}", self.preview_cache_rule, zone)
+        created, old = self.needs(f"Account API Tokens (Edit) {account}", self.tokens)
         # SYNC_SECRET goes in the Worker with the lists token, so it is
         # replaced whenever that is
         sync_secret = secrets.token_urlsafe(32) if created["lists"] else None

@@ -333,7 +333,7 @@ class SetupTest(unittest.TestCase):
         fake.send = lambda method, url, *a: (
             (403, b'{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}')
             if url.endswith("/rules/lists") else real_send(method, url, *a))
-        with self.assertRaisesRegex(SystemExit, "needs Account Rule Lists Write on the account policy"):
+        with self.assertRaisesRegex(SystemExit, "needs Account Rule Lists \\(Edit\\) on the account policy"):
             make(fake)[0].run_all()
 
     def test_cloudflare_errors_name_the_call(self):
