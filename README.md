@@ -1,6 +1,7 @@
 # Redirects sync Worker
 
-`wafer-space-redirects-sync` is a Cloudflare Worker that keeps two account
+`redirects-sync` (at
+<https://redirects-sync.wafer-space.workers.dev>) is a Cloudflare Worker that keeps two account
 Bulk Redirect lists in step with the `redirects.json` files the site builds
 (see `_plugins/index_redirects.rb`), so old and alternative URLs such as
 `/about.html`, `/about/` and `/about/index.html` get real HTTP redirects from
@@ -77,7 +78,7 @@ Done once; recorded here so it can be redone.
 
 ### Cloudflare
 
-1. A workers.dev subdomain for the account.
+1. The workers.dev subdomain `wafer-space` for the account.
 2. The two lists, `kind: "redirect"`, and the account ruleset for the
    `http_request_redirect` phase with one rule per list:
 

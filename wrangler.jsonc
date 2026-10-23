@@ -3,7 +3,7 @@
 // CF_API_TOKEN, CF_ACCOUNT_ID and SYNC_SECRET; see README.md.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "wafer-space-redirects-sync",
+  "name": "redirects-sync",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,

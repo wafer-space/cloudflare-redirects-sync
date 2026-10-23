@@ -1,4 +1,4 @@
-// wafer-space-redirects-sync: keeps the wafer_space and preview_wafer_space
+// redirects-sync: keeps the wafer_space and preview_wafer_space
 // Bulk Redirect lists in sync with the redirects.json files the sites serve.
 // Runs on a cron trigger, and on POST /sync from the deploy workflows.
 //

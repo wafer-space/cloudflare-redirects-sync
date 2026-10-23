@@ -190,7 +190,7 @@ export async function inputDigest(parts) {
 const DESCRIPTION_RE = /\bsha256=([0-9a-f]{64}) items=([0-9]+)\b/;
 
 export function describeList(digest, count) {
-  return `Synced by the wafer-space-redirects-sync Worker; do not edit by hand. sha256=${digest} items=${count}`;
+  return `Synced by the redirects-sync Worker; do not edit by hand. sha256=${digest} items=${count}`;
 }
 
 // The digest and item count a description records, or null.
