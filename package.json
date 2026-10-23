@@ -1,8 +1,10 @@
 {
-  "name": "wafer-space-redirects-sync",
+  "name": "cloudflare-redirects-sync",
   "private": true,
   "type": "module",
   "description": "Cloudflare Worker that keeps the wafer.space Bulk Redirect lists in sync with the site's redirects.json",
+  "license": "Apache-2.0",
+  "repository": "github:wafer-space/cloudflare-redirects-sync",
   "engines": {
     "node": ">=22"
   },
