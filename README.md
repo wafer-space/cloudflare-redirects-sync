@@ -105,45 +105,16 @@ tests on pull requests and pushes, and deploys the Worker from `main`.
 
 ## Setup
 
-Done once; recorded here so it can be redone.
+[SETUP.md](SETUP.md) lists everything the Worker needs (the workers.dev
+subdomain, the two lists and their rules, the preview hostname's proxy and
+cache rule, and the tokens and secrets, each with only the permission it
+needs) and how to set it up with [`scripts/setup.py`](scripts/setup.py),
+which takes one short-lived Cloudflare token and does the rest:
 
-### Cloudflare
-
-1. The workers.dev subdomain `wafer-space` for the account.
-2. The two lists, `kind: "redirect"`, and the account ruleset for the
-   `http_request_redirect` phase with one rule per list:
-
-   ```json
-   {
-     "expression": "http.request.full_uri in $wafer_space",
-     "action": "redirect",
-     "action_parameters": {"from_list": {"name": "wafer_space", "key": "http.request.full_uri"}}
-   }
-   ```
-
-3. `preview.wafer.space` proxied through Cloudflare (`www.preview` stays
-   DNS-only, out of the zone's "WWW to root" redirect), with a cache rule
-   that bypasses the cache for `http.host eq "preview.wafer.space"`, since
-   GitHub Pages sends `max-age=600` and previews change on every push.
-4. Worker secrets, set with `npx wrangler secret put <NAME>`:
-   - `CF_API_TOKEN`: an API token with only Account > Account Filter Lists >
-     Edit.
-   - `CF_ACCOUNT_ID`: the account ID.
-   - `SYNC_SECRET`: a random string; the same value as the GitHub secret
-     `REDIRECTS_SYNC_SECRET`.
-
-### GitHub
-
-This repository (Settings > Secrets and variables > Actions):
-
-- Secret `CLOUDFLARE_WORKERS_TOKEN`: an API token with Account > Workers
-  Scripts > Edit, used to deploy.
-- Variable `CLOUDFLARE_ACCOUNT_ID`.
-
-`wafer-space/wafer-space.github.io` has the variable `REDIRECTS_SYNC_URL`
-(the Worker's workers.dev URL) and the secret `REDIRECTS_SYNC_SECRET`. Without
-them (as on PRs from forks) its workflows skip the sync, and the cron trigger
-catches up.
+```sh
+uv run scripts/setup.py --account-id <account ID>          # report what's missing
+uv run scripts/setup.py --account-id <account ID> --apply  # set it up
+```
 
 ## Checking it
 
