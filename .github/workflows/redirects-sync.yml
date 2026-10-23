@@ -1,0 +1,90 @@
+# Test the Cloudflare redirects sync Worker (cloudflare/redirects-sync/) on
+# pull requests, and deploy it when it changes on main.
+#
+# Setup required (see cloudflare/redirects-sync/README.md):
+# - Secret CLOUDFLARE_WORKERS_TOKEN: an API token with Account > Workers
+#   Scripts > Edit, used only to deploy the Worker.
+# - Variable CLOUDFLARE_ACCOUNT_ID: the Cloudflare account to deploy to.
+# - Variable REDIRECTS_SYNC_URL and secret REDIRECTS_SYNC_SECRET: where to
+#   reach the Worker, used to re-sync after deploying.
+name: Redirects sync Worker
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "cloudflare/redirects-sync/**"
+      - ".github/workflows/redirects-sync.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "cloudflare/redirects-sync/**"
+      - ".github/workflows/redirects-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redirects-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: cloudflare/redirects-sync
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare/redirects-sync/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Check the Worker bundles
+        run: npx wrangler deploy --dry-run --outdir dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare/redirects-sync/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy the Worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The new code may build the lists differently from the same files, so
+      # rewrite them even where the files haven't changed.
+      - name: Re-sync all lists
+        working-directory: .
+        run: python3 .github/scripts/redirects-sync.py --force
+        env:
+          REDIRECTS_SYNC_URL: ${{ vars.REDIRECTS_SYNC_URL }}
+          REDIRECTS_SYNC_SECRET: ${{ secrets.REDIRECTS_SYNC_SECRET }}
