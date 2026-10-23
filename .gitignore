@@ -3,3 +3,4 @@ node_modules/
 .dev.vars*
 dist/
 tmp/
+__pycache__/
