@@ -51,7 +51,7 @@ class Fake {
     this.requests.push({ method, url, init });
     if (u.hostname !== "api.cloudflare.com") {
       assert.equal(init.cache, "no-store");
-      assert.ok(u.searchParams.has("redirects-sync"), "cache-busting parameter");
+      assert.ok(u.searchParams.has("redirects"), "cache-busting parameter");
       u.search = "";
       const body = this.files[u.toString()];
       if (body === undefined) return new Response("not found", { status: 404 });

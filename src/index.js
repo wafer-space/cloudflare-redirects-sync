@@ -1,4 +1,4 @@
-// redirects-sync: loads the redirects.json files that wafer.space and
+// redirects: loads the redirects.json files that wafer.space and
 // preview.wafer.space serve into the wafer_space and preview_wafer_space
 // Bulk Redirect lists. Runs on a cron trigger, and on requests from the
 // deploy workflows:

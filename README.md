@@ -1,6 +1,6 @@
 # Redirects sync Worker
 
-`redirects-sync` (at <https://redirects-sync.wafer-space.workers.dev>) is a
+`redirects` (at <https://redirects.wafer-space.workers.dev>) is a
 Cloudflare Worker that loads the `redirects.json` files the
 [wafer.space site](https://github.com/wafer-space/wafer-space.github.io)
 publishes into two account Bulk Redirect lists, so old and alternative URLs

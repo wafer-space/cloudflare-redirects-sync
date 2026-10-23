@@ -22,7 +22,7 @@ export class CloudflareApiError extends Error {
 // behind Cloudflare, and GitHub Pages sends max-age=600.
 export async function fetchText(url, { fetch = globalThis.fetch } = {}) {
   const busted = new URL(url);
-  busted.searchParams.set("redirects-sync", Date.now().toString(36));
+  busted.searchParams.set("redirects", Date.now().toString(36));
   const res = await fetch(busted.toString(), {
     cache: "no-store",
     redirect: "manual",
