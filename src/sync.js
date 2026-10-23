@@ -80,10 +80,24 @@ export async function syncList(name, { api, fetch, requested, force = false, wai
   for (const delay of POLL_DELAYS) {
     await wait(delay);
     const op = await api.getOperation(operationId);
-    if (op.status === "completed") return [200, { status: "applied", file, previous: current }];
+    if (op.status === "completed") return verify(name, list, file, current, { api });
     if (op.status === "failed") {
       return [502, { status: "failed", error: op.error ?? "no error given", operation_id: operationId, file }];
     }
   }
   return [202, { status: "pending", operation_id: operationId, file }];
+}
+
+// After a write, read the list's revision back from Cloudflare and return it
+// as `list`. Another sync may have written between this one's check and its
+// write, so the caller checks that the list holds at least the revision it
+// asked for, and retries if not.
+async function verify(name, list, file, previous, { api }) {
+  const { host } = LISTS[name];
+  const found = await api.searchItems(list.id, `${host}/revision`);
+  const readback = found.map((item) => parseRevision(item, host)).find(Boolean) ?? null;
+  if (!readback) {
+    return [502, { status: "failed", error: "no revision item in the list after writing", file, previous }];
+  }
+  return [200, { status: "applied", file, list: readback, previous }];
 }

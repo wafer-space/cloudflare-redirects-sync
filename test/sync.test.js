@@ -76,6 +76,9 @@ class Fake {
     }
     if (method === "GET" && path === "/rules/lists/bulk_operations/op1") {
       const status = this.operationStatus.shift() ?? "completed";
+      // Lets a test change the list just as the write completes, like another
+      // sync's write landing straight after this one
+      if (status === "completed") this.afterComplete?.();
       return ok({ id: "op1", status, ...(status === "failed" ? { error: "boom" } : {}) });
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -189,6 +192,46 @@ test("a file newer than the requested revision is applied", async () => {
   const [status, body] = await sync(fake, `?list=wafer_space&number=8&commit=${sha("8")}`);
   assert.deepEqual([status, body.status], [200, "applied"]);
   assert.equal(body.file.number, 10);
+});
+
+test("an applied write reports the revision read back from the list", async () => {
+  const fake = new Fake();
+  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("a")}`);
+  assert.deepEqual([status, body.status], [200, "applied"]);
+  assert.equal(body.list.number, 10);
+  assert.equal(body.list.commit, sha("a"));
+  const reads = fake.requests.filter((r) => r.url.includes("/items?"));
+  assert.equal(reads.length, 2, "one search before the write, one after");
+  const siteFetches = fake.requests.filter((r) => !r.url.includes("api.cloudflare.com"));
+  assert.equal(siteFetches.length, 1, "the site is fetched only once");
+});
+
+test("an older write landing straight after shows in the readback", async () => {
+  const fake = new Fake();
+  fake.afterComplete = () => {
+    fake.items.L1 = JSON.parse(file("wafer.space", 9, sha("9")));
+  };
+  const [status, body] = await sync(fake, `?list=wafer_space&number=10&commit=${sha("a")}`);
+  assert.deepEqual([status, body.status], [200, "applied"]);
+  assert.equal(body.file.number, 10);
+  assert.equal(body.list.number, 9);
+});
+
+test("no revision item after the write is a 502", async () => {
+  const fake = new Fake();
+  fake.afterComplete = () => {
+    fake.items.L1 = [];
+  };
+  const [status, body] = await sync(fake, "?list=wafer_space");
+  assert.deepEqual([status, body.status], [502, "failed"]);
+});
+
+test("responses with nothing to do report the list's revision too", async () => {
+  const fake = new Fake();
+  await sync(fake, "?list=wafer_space");
+  const [, body] = await sync(fake, "?list=wafer_space");
+  assert.equal(body.status, "up_to_date");
+  assert.equal(body.list.number, 10);
 });
 
 test("a pending bulk operation is a 503, without retrying", async () => {

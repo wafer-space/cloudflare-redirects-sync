@@ -52,9 +52,14 @@ list's. That covers:
   number and is ignored.
 - **Calls out of order.** A late request for an older revision finds the
   list newer and does nothing (`list_is_newer`). Cloudflare runs one bulk
-  operation per account at a time; in the narrow case where an older write
-  lands just after a newer one, the list's revision item truthfully shows the
-  older revision and the next cron run restores the newer one.
+  operation per account at a time, but an older write can still land just
+  after a newer one, if the newer one finishes between the older sync's
+  check and its write. So after every write the Worker reads the revision
+  item back from the list and returns it as `list`; the caller checks it
+  holds at least the revision it asked for, and retries if not. If the newer
+  sync read back before the older write landed, the list's revision item
+  still truthfully shows the older revision, and the next cron run restores
+  the newer one.
 
 ## When it runs
 
@@ -68,13 +73,16 @@ The Worker never retries. Its answers:
 
 | Status | `status` | Meaning |
 | --- | --- | --- |
-| 200 | `applied` | The list now holds the file's revision. |
-| 200 | `up_to_date`, `list_is_newer` | Nothing to do. |
+| 200 | `applied` | The file was written; `list` is the revision read back from the list afterwards. |
+| 200 | `up_to_date`, `list_is_newer` | Nothing to do; `list` is the list's revision. |
 | 202 | `pending` | Cloudflare accepted the write but hadn't finished it when the Worker stopped waiting. |
 | 409 | `not_published` | The site doesn't serve the requested revision yet: retry. |
 | 409 | `commit_mismatch` | The site serves a different commit at the requested number. |
 | 503 | `busy` | Another bulk operation is pending: retry. |
-| 502 | `error`, `failed` | The file couldn't be fetched or has no revision item first, or Cloudflare's operation failed. |
+| 502 | `error`, `failed` | The file couldn't be fetched or has no revision item first, Cloudflare's operation failed, or the list had no revision item after writing. |
+
+Callers that name a revision should treat a 200 whose `list.number` is lower
+than the one they asked for as "retry".
 
 ## Code
 
