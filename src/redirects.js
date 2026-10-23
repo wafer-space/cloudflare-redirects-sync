@@ -168,20 +168,33 @@ export function sortItems(items) {
   return [...items].sort((a, b) => (a.source_url < b.source_url ? -1 : a.source_url > b.source_url ? 1 : 0));
 }
 
-// A stable digest of a list's items, stored in the list's description so that
-// later runs can tell nothing changed without reading every item back.
-export async function itemsDigest(items) {
-  const canonical = JSON.stringify(sortItems(items.map(normaliseItem)));
+// Parse a downloaded file, with the file named in the error.
+export function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ValidationError(`${label}: not valid JSON`);
+  }
+}
+
+// A digest of the files a list is built from (and their names), stored in the
+// list's description. A later run whose files hash the same can stop there,
+// without parsing anything or reading the list's items back; that keeps the
+// frequent cron runs well inside the Free plan's CPU limit.
+export async function inputDigest(parts) {
+  const canonical = parts.map((part) => `${part.length}:${part}`).join("\n");
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)));
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const DIGEST_RE = /\bsha256=([0-9a-f]{64})\b/;
+const DESCRIPTION_RE = /\bsha256=([0-9a-f]{64}) items=([0-9]+)\b/;
 
-export function describeList(digest) {
-  return `Synced by the wafer-space-redirects-sync Worker; do not edit by hand. sha256=${digest}`;
+export function describeList(digest, count) {
+  return `Synced by the wafer-space-redirects-sync Worker; do not edit by hand. sha256=${digest} items=${count}`;
 }
 
-export function digestFromDescription(description) {
-  return DIGEST_RE.exec(description ?? "")?.[1] ?? null;
+// The digest and item count a description records, or null.
+export function parseDescription(description) {
+  const m = DESCRIPTION_RE.exec(description ?? "");
+  return m ? { digest: m[1], items: Number(m[2]) } : null;
 }

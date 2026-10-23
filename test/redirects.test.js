@@ -5,8 +5,9 @@ import {
   ValidationError,
   buildPreviewItems,
   describeList,
-  digestFromDescription,
-  itemsDigest,
+  inputDigest,
+  parseDescription,
+  parseJson,
   parsePreviewIndex,
   parseRedirects,
   rewriteForPreview,
@@ -129,21 +130,25 @@ test("parsePreviewIndex rejects malformed indexes", () => {
   }
 });
 
-test("itemsDigest ignores order and explicit defaults", async () => {
-  const items = parseRedirects(SAMPLE);
-  const fromApi = [...items].reverse().map((r) => ({ ...r, id: "x", created_on: "y" }));
-  const sparse = SAMPLE.map((e) => ({ ...e.redirect }));
-  const digest = await itemsDigest(items);
-  assert.match(digest, /^[0-9a-f]{64}$/);
-  assert.equal(await itemsDigest(fromApi), digest);
-  assert.equal(await itemsDigest(sparse), digest);
-  assert.notEqual(await itemsDigest(items.slice(1)), digest);
+test("parseJson names the file when it isn't JSON", () => {
+  assert.deepEqual(parseJson('{"a": 1}', "x.json"), { a: 1 });
+  assert.throws(() => parseJson("<html>", "x.json"), (err) => err instanceof ValidationError && /x\.json: not valid JSON/.test(err.message));
 });
 
-test("the digest round-trips through the list description", async () => {
-  const digest = await itemsDigest(parseRedirects(SAMPLE));
-  assert.ok(describeList(digest).length <= 500);
-  assert.equal(digestFromDescription(describeList(digest)), digest);
-  assert.equal(digestFromDescription(""), null);
-  assert.equal(digestFromDescription(undefined), null);
+test("inputDigest depends on every part and where the parts split", async () => {
+  const digest = await inputDigest(["pr-1", "abc"]);
+  assert.match(digest, /^[0-9a-f]{64}$/);
+  assert.equal(await inputDigest(["pr-1", "abc"]), digest);
+  assert.notEqual(await inputDigest(["pr-1", "abd"]), digest);
+  assert.notEqual(await inputDigest(["pr-1a", "bc"]), digest);
+  assert.notEqual(await inputDigest(["pr-1", "abc", "pr-2", ""]), digest);
+});
+
+test("the digest and count round-trip through the list description", async () => {
+  const digest = await inputDigest(["x"]);
+  assert.ok(describeList(digest, 123).length <= 500);
+  assert.deepEqual(parseDescription(describeList(digest, 123)), { digest, items: 123 });
+  assert.equal(parseDescription(""), null);
+  assert.equal(parseDescription(undefined), null);
+  assert.equal(parseDescription(`sha256=${digest}`), null);
 });
