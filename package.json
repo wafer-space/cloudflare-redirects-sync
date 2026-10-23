@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Cloudflare Worker that keeps the wafer.space Bulk Redirect lists in sync with the site's redirects.json",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "node --test",
     "deploy": "wrangler deploy"

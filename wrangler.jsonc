@@ -1,0 +1,19 @@
+// Deployed by .github/workflows/redirects-sync.yml when this directory
+// changes on main. Secrets (set once with `npx wrangler secret put <NAME>`):
+// CF_API_TOKEN, CF_ACCOUNT_ID and SYNC_SECRET; see README.md.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wafer-space-redirects-sync",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "triggers": {
+    // Backstop for missed or stale syncs; the deploy workflows also call
+    // POST /sync straight after each deploy.
+    "crons": ["*/5 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
