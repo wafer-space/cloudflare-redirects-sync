@@ -1,8 +1,8 @@
 # Test the Worker on pull requests and pushes, and deploy it from main.
 #
 # Setup required (see SETUP.md; scripts/setup.py sets these):
-# - Secret CLOUDFLARE_WORKERS_TOKEN: an API token with Account > Workers
-#   Scripts > Edit, used only to deploy the Worker.
+# - Secret CLOUDFLARE_WORKERS_TOKEN: an account API token with only Workers
+#   Scripts Write, used only to deploy the Worker.
 # - Variable CLOUDFLARE_ACCOUNT_ID: the Cloudflare account to deploy to.
 name: CI
 

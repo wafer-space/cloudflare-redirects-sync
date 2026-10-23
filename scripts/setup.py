@@ -56,16 +56,17 @@ WORKER_REPO = "wafer-space/cloudflare-redirects-sync"
 SITE_REPO = "wafer-space/wafer-space.github.io"
 ACCOUNT_SCOPE = "com.cloudflare.api.account"
 
-# The tokens this creates, and the names their one permission goes by (the
-# API calls them "... Write", the dashboard "... Edit")
+# The tokens this creates, and the name of each one's only permission, as
+# Cloudflare's permission groups list names it (with the older names some
+# of its docs still use)
 TOKENS = {
     "lists": {
         "name": "redirects Worker: replace the redirect lists",
-        "groups": ("Account Filter Lists Write", "Account Rule Lists Write", "Account Filter Lists Edit"),
+        "groups": ("Account Rule Lists Write", "Account Filter Lists Write"),
     },
     "deploy": {
         "name": "redirects Worker: deploy from GitHub Actions",
-        "groups": ("Workers Scripts Write", "Workers Scripts Edit"),
+        "groups": ("Workers Scripts Write",),
     },
 }
 
@@ -399,16 +400,27 @@ class Setup:
                 raise SystemExit(f"GET {url}: HTTP {status}: {body[:300]}")
             self.ok(f"GET /list?list={name}: {body[:200]}")
 
+    @staticmethod
+    def needs(permission, step, *args):
+        """Run a step, naming the setup token's missing permission on a 403."""
+        try:
+            return step(*args)
+        except CloudflareError as err:
+            if err.status != 403:
+                raise
+            raise SystemExit(f"The setup token needs {permission} (see SETUP.md): {err}") from None
+
     def run_all(self):
         self.check_token()
         self.find_account()
-        self.workers_subdomain()
-        self.lists()
-        self.redirect_rules()
-        zone = self.find_zone()
-        self.preview_proxied(zone)
-        self.preview_cache_rule(zone)
-        created, old = self.tokens()
+        account, zone_policy = "on the account policy", "on the wafer.space zone policy"
+        self.needs(f"Workers Scripts Write {account}", self.workers_subdomain)
+        self.needs(f"Account Rule Lists Write {account}", self.lists)
+        self.needs(f"Mass URL Redirects Write {account}", self.redirect_rules)
+        zone = self.needs(f"Zone Read {zone_policy}", self.find_zone)
+        self.needs(f"DNS Write {zone_policy}", self.preview_proxied, zone)
+        self.needs(f"Cache Settings Write {zone_policy}", self.preview_cache_rule, zone)
+        created, old = self.needs(f"Account API Tokens Write {account}", self.tokens)
         # SYNC_SECRET goes in the Worker with the lists token, so it is
         # replaced whenever that is
         sync_secret = secrets.token_urlsafe(32) if created["lists"] else None

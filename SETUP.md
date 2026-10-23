@@ -24,10 +24,10 @@ The tokens and secrets, each with only the permission it needs:
 | Name | Holds | Kept in | Used by |
 | --- | --- | --- | --- |
 | Setup token | Created by you; see [step 1](#1-create-the-setup-token) | Nowhere: delete it when done | `scripts/setup.py` |
-| `CF_API_TOKEN` | Account token "redirects Worker: replace the redirect lists", with only Account Filter Lists Edit | Worker secret | The Worker, to read and replace the two lists |
+| `CF_API_TOKEN` | Account token "redirects Worker: replace the redirect lists", with only Account Rule Lists Write | Worker secret | The Worker, to read and replace the two lists |
 | `CF_ACCOUNT_ID` | The account ID | Worker secret | The Worker |
 | `SYNC_SECRET` | A random string | Worker secret | The Worker, to check requests' `Authorization: Bearer` |
-| `CLOUDFLARE_WORKERS_TOKEN` | Account token "redirects Worker: deploy from GitHub Actions", with only Workers Scripts Edit | Secret on `wafer-space/cloudflare-redirects-sync` | `.github/workflows/ci.yml`, to deploy the Worker from `main` |
+| `CLOUDFLARE_WORKERS_TOKEN` | Account token "redirects Worker: deploy from GitHub Actions", with only Workers Scripts Write | Secret on `wafer-space/cloudflare-redirects-sync` | `.github/workflows/ci.yml`, to deploy the Worker from `main` |
 | `CLOUDFLARE_ACCOUNT_ID` | The account ID | Variable on `wafer-space/cloudflare-redirects-sync` | `ci.yml` |
 | `REDIRECTS_SYNC_SECRET` | The same value as `SYNC_SECRET` | Secret on `wafer-space/wafer-space.github.io` | The site's deploy workflows, to call the Worker |
 | `REDIRECTS_SYNC_URL` | `https://redirects.wafer-space.workers.dev` | Variable on `wafer-space/wafer-space.github.io` | The site's deploy workflows |
@@ -53,28 +53,31 @@ In the Cloudflare dashboard, go to **Manage Account > Account API Tokens >
 Create Token > Create Custom Token**, and give it:
 
 - **Token name:** `redirects Worker setup` (anything will do).
-- **Permissions:**
+- **Two permission policies**, because account permissions only work on a
+  policy whose resource is the account, and zone permissions on one whose
+  resource is the zone:
 
-  | | | |
+  | Policy resource | Permissions | For |
   | --- | --- | --- |
-  | Account | Account API Tokens | Edit |
-  | Account | Account Filter Lists | Edit |
-  | Account | Bulk URL Redirects | Edit |
-  | Account | Workers Scripts | Edit |
-  | Zone | Zone | Read |
-  | Zone | DNS | Edit |
-  | Zone | Cache Rules | Edit |
+  | The account (Include, Specific account) | Account API Tokens Write | Creating the Worker's two tokens |
+  | | Account Rule Lists Write | The redirect lists |
+  | | Mass URL Redirects Write | The Bulk Redirect rules |
+  | | Workers Scripts Write | The workers.dev subdomain |
+  | The `wafer.space` zone (Include, Specific zone) | Zone Read | Finding the zone |
+  | | DNS Write | Proxying `preview.wafer.space` |
+  | | Cache Settings Write | The cache rule |
 
-- **Zone Resources:** Include, Specific zone, `wafer.space`.
+  These are the names Cloudflare's API lists (some of its docs use older
+  names, such as Account Filter Lists, Bulk URL Redirects and Cache Rules).
+  Leave out everything else.
 - **TTL:** end tomorrow, so it stops working even if it isn't deleted.
 
 Copy the token: Cloudflare shows it only once. It can't grant the tokens it
 creates more than the permissions above, and you can't give it more than
 your own.
 
-Cloudflare's Bulk Redirects docs name Bulk URL Redirects Edit for creating
-the redirect rules. If that step still fails with an authentication error,
-add **Account > Account Rulesets > Edit**.
+If creating the Bulk Redirect rules still fails with an authentication
+error, add Account Rulesets Write to the account policy.
 
 ## 2. See what would change
 

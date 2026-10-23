@@ -15,7 +15,7 @@ import setup
 ACCOUNT = "acc123"
 ZONE_ID = "zone456"
 GROUPS = [
-    {"id": "g-lists", "name": "Account Filter Lists Write", "scopes": ["com.cloudflare.api.account"], "is_selectable": True},
+    {"id": "g-lists", "name": "Account Rule Lists Write", "scopes": ["com.cloudflare.api.account"], "is_selectable": True},
     {"id": "g-workers", "name": "Workers Scripts Write", "scopes": ["com.cloudflare.api.account"], "is_selectable": True},
     {"id": "g-zone", "name": "Zone Read", "scopes": ["com.cloudflare.api.account.zone"], "is_selectable": True},
 ]
@@ -181,7 +181,7 @@ class SetupTest(unittest.TestCase):
                          "would create the ruleset with a rule for each list",
                          "would proxy preview.wafer.space",
                          "would create the zone's cache rules",
-                         "would create the token 'redirects Worker: replace the redirect lists' with Account Filter Lists Write",
+                         "would create the token 'redirects Worker: replace the redirect lists' with Account Rule Lists Write",
                          "would deploy the Worker",
                          "would set the wafer-space/cloudflare-redirects-sync secret CLOUDFLARE_WORKERS_TOKEN",
                          "would set the wafer-space/wafer-space.github.io secret REDIRECTS_SYNC_SECRET",
@@ -325,6 +325,15 @@ class SetupTest(unittest.TestCase):
         fake = Fake()
         fake.setup_token_status = "expired"
         with self.assertRaisesRegex(SystemExit, "The setup token is expired"):
+            make(fake)[0].run_all()
+
+    def test_refused_step_names_the_permission(self):
+        fake = Fake()
+        real_send = fake.send
+        fake.send = lambda method, url, *a: (
+            (403, b'{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}')
+            if url.endswith("/rules/lists") else real_send(method, url, *a))
+        with self.assertRaisesRegex(SystemExit, "needs Account Rule Lists Write on the account policy"):
             make(fake)[0].run_all()
 
     def test_cloudflare_errors_name_the_call(self):

@@ -10,7 +10,7 @@
 //
 // Every request needs `Authorization: Bearer <SYNC_SECRET>`.
 //
-// Secrets: CF_API_TOKEN (Account Filter Lists Edit), CF_ACCOUNT_ID, and
+// Secrets: CF_API_TOKEN (Account Rule Lists Write), CF_ACCOUNT_ID, and
 // SYNC_SECRET.
 
 import { CloudflareApi } from "./cloudflare.js";
