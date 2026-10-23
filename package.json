@@ -1,0 +1,13 @@
+{
+  "name": "wafer-space-redirects-sync",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that keeps the wafer.space Bulk Redirect lists in sync with the site's redirects.json",
+  "scripts": {
+    "test": "node --test",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.152.0"
+  }
+}
