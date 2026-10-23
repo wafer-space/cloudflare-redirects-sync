@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handleRequest, runScheduled } from "../src/index.js";
-import { parseRevision } from "../src/sync.js";
+import { fileRevision, parseRevision } from "../src/sync.js";
 
 const ACCOUNT = "acct123";
 const ENV = { CF_API_TOKEN: "cf-token", CF_ACCOUNT_ID: ACCOUNT, SYNC_SECRET: "s3cret" };
@@ -114,6 +114,31 @@ test("parseRevision rejects anything else", () => {
     { ...good, redirect: { ...good.redirect, target_url: "https://github.com/x/commit/abc" } },
   ]) {
     assert.equal(parseRevision(item, "wafer.space"), null, JSON.stringify(item));
+  }
+});
+
+test("fileRevision reads only the first item, pretty or compact", () => {
+  const items = [revision("wafer.space", 7, sha("a")), redirect("wafer.space", "a.html")];
+  for (const text of [JSON.stringify(items, null, 2), JSON.stringify(items), ` \n${JSON.stringify(items)}\n`]) {
+    assert.equal(fileRevision(text, "wafer.space")?.number, 7, text.slice(0, 40));
+  }
+  // The rest of the file is never parsed
+  const head = JSON.stringify([revision("wafer.space", 8, sha("a"))]).slice(0, -1);
+  assert.equal(fileRevision(`${head}, {not json at all`, "wafer.space").number, 8);
+});
+
+test("fileRevision rejects files that don't start with a revision item", () => {
+  const good = revision("wafer.space", 7, sha("a"));
+  const reordered = { redirect: good.redirect, comment: good.comment };
+  for (const text of [
+    "",
+    "[]",
+    "{}",
+    "<html>",
+    JSON.stringify([redirect("wafer.space", "a.html"), good]),
+    JSON.stringify([reordered, redirect("wafer.space", "a.html")]),
+  ]) {
+    assert.equal(fileRevision(text, "wafer.space"), null, text.slice(0, 60));
   }
 });
 

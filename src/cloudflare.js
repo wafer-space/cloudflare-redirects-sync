@@ -69,7 +69,8 @@ export class CloudflareApi {
 
   // A list's items whose source URL contains `search`.
   searchItems(listId, search) {
-    const query = new URLSearchParams({ search, per_page: "50" });
+    // 500 is the most per page; the revision item is the only exact match.
+    const query = new URLSearchParams({ search, per_page: "500" });
     return this.request("GET", `/rules/lists/${listId}/items?${query}`);
   }
 

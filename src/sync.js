@@ -35,21 +35,48 @@ export function parseRevision(item, host) {
   return { number: Number(number[1]), commit: commit[1], comment: item.comment };
 }
 
+// The file's first item, cut out of its text so the rest (thousands of items
+// for the previews) is never parsed: the Free plan allows 10 ms of CPU. It
+// ends at the first "}" followed by "}" (its redirect's, then its own); any
+// other shape fails to parse and is reported as a file without a revision.
+const FIRST_ITEM_RE = /^\s*\[\s*(\{[\s\S]*?\}\s*\})/;
+
+export function fileRevision(text, host) {
+  const match = FIRST_ITEM_RE.exec(text);
+  try {
+    return match ? parseRevision(JSON.parse(match[1]), host) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The revision the list's own revision item records, or null.
+async function listRevision(api, listId, host) {
+  const found = await api.searchItems(listId, `${host}/revision`);
+  return found.map((item) => parseRevision(item, host)).find(Boolean) ?? null;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Returns [HTTP status, body].
-export async function syncList(name, { api, fetch, requested, force = false, wait = sleep }) {
+// Returns [HTTP status, body]; never throws.
+export async function syncList(name, options) {
+  try {
+    return await sync(name, options);
+  } catch (err) {
+    return [500, { status: "error", error: err.message }];
+  }
+}
+
+async function sync(name, { api, fetch, requested, force = false, wait = sleep }) {
   const { url, host } = LISTS[name];
 
   let text;
-  let file;
   try {
     text = await fetchText(url, { fetch });
-    const items = JSON.parse(text);
-    file = Array.isArray(items) ? parseRevision(items[0], host) : null;
   } catch (err) {
     return [502, { status: "error", error: err.message }];
   }
+  const file = fileRevision(text, host);
   if (!file) return [502, { status: "error", error: `${url} doesn't start with a ${host}/revision item` }];
 
   if (requested) {
@@ -63,8 +90,7 @@ export async function syncList(name, { api, fetch, requested, force = false, wai
 
   const list = (await api.listLists()).find((l) => l.name === name && l.kind === "redirect");
   if (!list) return [500, { status: "error", error: `no redirect list named ${name}` }];
-  const found = await api.searchItems(list.id, `${host}/revision`);
-  const current = found.map((item) => parseRevision(item, host)).find(Boolean) ?? null;
+  const current = await listRevision(api, list.id, host);
 
   if (!force && current && file.number <= current.number) {
     return [200, { status: file.number === current.number ? "up_to_date" : "list_is_newer", file, list: current }];
@@ -80,24 +106,18 @@ export async function syncList(name, { api, fetch, requested, force = false, wai
   for (const delay of POLL_DELAYS) {
     await wait(delay);
     const op = await api.getOperation(operationId);
-    if (op.status === "completed") return verify(name, list, file, current, { api });
     if (op.status === "failed") {
       return [502, { status: "failed", error: op.error ?? "no error given", operation_id: operationId, file }];
     }
+    if (op.status !== "completed") continue;
+    // Another sync may have written between this one's check and its write,
+    // so return the revision read back from the list for the caller to check
+    // against the one it asked for.
+    const readback = await listRevision(api, list.id, host);
+    if (!readback) {
+      return [502, { status: "failed", error: "no revision item in the list after writing", file, previous: current }];
+    }
+    return [200, { status: "applied", file, list: readback, previous: current }];
   }
   return [202, { status: "pending", operation_id: operationId, file }];
-}
-
-// After a write, read the list's revision back from Cloudflare and return it
-// as `list`. Another sync may have written between this one's check and its
-// write, so the caller checks that the list holds at least the revision it
-// asked for, and retries if not.
-async function verify(name, list, file, previous, { api }) {
-  const { host } = LISTS[name];
-  const found = await api.searchItems(list.id, `${host}/revision`);
-  const readback = found.map((item) => parseRevision(item, host)).find(Boolean) ?? null;
-  if (!readback) {
-    return [502, { status: "failed", error: "no revision item in the list after writing", file, previous }];
-  }
-  return [200, { status: "applied", file, list: readback, previous }];
 }

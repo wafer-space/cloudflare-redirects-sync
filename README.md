@@ -25,7 +25,7 @@ The first item of each file records the revision it was built from:
 
 ```json
 {
-  "comment": "v0.0-474-g6fcfcda",
+  "comment": "v0.0-474-g6fcfcdad8fabe807d87a0737b593a6edef945b9d",
   "redirect": {
     "source_url": "wafer.space/revision",
     "target_url": "https://github.com/wafer-space/wafer-space.github.io/commit/6fcfcdad8fabe807d87a0737b593a6edef945b9d",

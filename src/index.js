@@ -9,7 +9,7 @@
 import { CloudflareApi } from "./cloudflare.js";
 import { LISTS, syncList } from "./sync.js";
 
-const json = (body, status) => Response.json(body, { status });
+const json = (body, status, headers) => Response.json(body, { status, headers });
 
 async function sha256(text) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
@@ -40,10 +40,7 @@ export async function handleRequest(request, env, { fetch = globalThis.fetch, wa
   const url = new URL(request.url);
   if (url.pathname !== "/sync") return json({ error: "not found" }, 404);
   if (request.method !== "POST") {
-    return new Response(JSON.stringify({ error: "use POST" }), {
-      status: 405,
-      headers: { allow: "POST", "content-type": "application/json" },
-    });
+    return json({ error: "use POST" }, 405, { allow: "POST" });
   }
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -64,25 +61,23 @@ export async function handleRequest(request, env, { fetch = globalThis.fetch, wa
     requested = { number: Number(number), commit };
   }
 
+  let api;
   try {
-    const api = makeApi(env, fetch);
-    const [status, body] = await syncList(name, { api, fetch, requested, force: params.get("force") === "1", wait });
-    return json({ list: name, ...body }, status);
+    api = makeApi(env, fetch);
   } catch (err) {
     return json({ list: name, status: "error", error: err.message }, 500);
   }
+  const [status, body] = await syncList(name, { api, fetch, requested, force: params.get("force") === "1", wait });
+  return json({ list: name, ...body }, status);
 }
 
 export async function runScheduled(env, { fetch = globalThis.fetch, wait } = {}) {
+  const api = makeApi(env, fetch);
   const results = {};
   // One after another: only one bulk operation may be pending per account.
   for (const name of Object.keys(LISTS)) {
-    try {
-      const [status, body] = await syncList(name, { api: makeApi(env, fetch), fetch, wait });
-      results[name] = { http: status, ...body };
-    } catch (err) {
-      results[name] = { http: 500, status: "error", error: err.message };
-    }
+    const [status, body] = await syncList(name, { api, fetch, wait });
+    results[name] = { http: status, ...body };
   }
   return results;
 }
