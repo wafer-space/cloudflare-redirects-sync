@@ -147,6 +147,7 @@ test("GET /source returns the site file's revision without calling Cloudflare", 
   const fake = new Fake();
   const [status, body] = await request(fake, "/source", "?list=wafer_space");
   assert.equal(status, 200);
+  assert.equal(body.name, "wafer_space");
   assert.deepEqual(body.source, { number: 10, commit: sha("a"), comment: "v0.0-10" });
   assert.ok(!fake.requests.some((r) => r.url.includes("api.cloudflare.com")));
 });

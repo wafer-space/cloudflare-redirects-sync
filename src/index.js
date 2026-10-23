@@ -64,7 +64,7 @@ export async function handleRequest(request, env, { fetch = globalThis.fetch, wa
   } catch (err) {
     [status, body] = [500, { status: "error", error: err.message }];
   }
-  return json({ list: name, ...body }, status);
+  return json({ name, ...body }, status);
 }
 
 export async function runScheduled(env, { fetch = globalThis.fetch, wait } = {}) {
