@@ -1,67 +1,84 @@
 # Redirects sync Worker
 
 `redirects-sync` (at <https://redirects-sync.wafer-space.workers.dev>) is a
-Cloudflare Worker that keeps two account Bulk Redirect lists in step with the
-`redirects.json` files the [wafer.space site](https://github.com/wafer-space/wafer-space.github.io)
-builds (see [`_plugins/index_redirects.rb`](https://github.com/wafer-space/wafer-space.github.io/blob/main/_plugins/index_redirects.rb)),
-so old and alternative URLs such as
-`/about.html`, `/about/` and `/about/index.html` get real HTTP redirects from
-Cloudflare instead of the meta-refresh pages GitHub Pages serves.
+Cloudflare Worker that loads the `redirects.json` files the
+[wafer.space site](https://github.com/wafer-space/wafer-space.github.io)
+publishes into two account Bulk Redirect lists, so old and alternative URLs
+such as `/about.html` get real HTTP redirects from Cloudflare instead of the
+meta-refresh pages GitHub Pages serves.
 
-| List | Hostname | Built from | Status |
-| --- | --- | --- | --- |
-| `wafer_space` | `wafer.space` | `https://wafer.space/redirects.json`, as is | as given (301) |
-| `preview_wafer_space` | `preview.wafer.space` | each preview's `redirects.json`, moved under `/pr-NNN/` | 302 |
+| List | Loaded from |
+| --- | --- |
+| `wafer_space` | `https://wafer.space/redirects.json` |
+| `preview_wafer_space` | `https://preview.wafer.space/redirects.json` |
 
-Previews use 302 because browsers cache a 301 indefinitely and a preview's
-redirects change with every push. For a preview, a source
-`wafer.space/<path>` becomes `preview.wafer.space/pr-NNN/<path>`, a target
-on `https://wafer.space` moves under `https://preview.wafer.space/pr-NNN/`,
-and any other target is left exactly as it is. The previews are the `pr-NNN`
-entries of `https://preview.wafer.space/previews.json` (written by the site
-repo's [`generate-preview-index.sh`](https://github.com/wafer-space/wafer-space.github.io/blob/main/.github/scripts/generate-preview-index.sh))
-whose `redirects` is true.
+The Worker doesn't build, check or change the redirects: each file is
+already the body of Cloudflare's "replace list items" call. The site's
+[`redirect_list.rb`](https://github.com/wafer-space/wafer-space.github.io/blob/main/_plugins/redirect_list.rb)
+writes the production file, and the preview deploy combines each preview's
+file into the preview one, moved under `/pr-NNN/` with 302s. One account rule
+in the `http_request_redirect` phase per list applies it.
 
-One account rule in the `http_request_redirect` phase per list applies it.
+## Revisions
+
+The first item of each file records the revision it was built from:
+
+```json
+{
+  "comment": "v0.0-474-g6fcfcda",
+  "redirect": {
+    "source_url": "wafer.space/revision",
+    "target_url": "https://github.com/wafer-space/wafer-space.github.io/commit/6fcfcdad8fabe807d87a0737b593a6edef945b9d",
+    "status_code": 302
+  }
+}
+```
+
+The comment starts with `git describe` (`v0.0-<number>`), and the target ends
+with the full commit hash. Because it is one of the list's items, it is
+written in the same replace as the redirects, so the list itself always says
+which revision it holds; no other state is kept. (It also makes
+`https://wafer.space/revision` a link to the commit the live redirects came
+from.)
+
+The Worker only replaces a list with a file whose number is higher than the
+list's. That covers:
+
+- **Publishing delays.** A sync request names the revision just deployed. If
+  the site still serves an older file, the Worker answers 409
+  `not_published` and the caller retries.
+- **Caches.** Files are fetched with a cache-busting query string and
+  `cache: "no-store"`; a stale copy that still gets through has a lower
+  number and is ignored.
+- **Calls out of order.** A late request for an older revision finds the
+  list newer and does nothing (`list_is_newer`). Cloudflare runs one bulk
+  operation per account at a time; in the narrow case where an older write
+  lands just after a newer one, the list's revision item truthfully shows the
+  older revision and the next cron run restores the newer one.
 
 ## When it runs
 
-- Every 5 minutes, on a cron trigger.
-- On `POST /sync` with `Authorization: Bearer <SYNC_SECRET>`, which the site
-  repo's [`redirects-sync.py`](https://github.com/wafer-space/wafer-space.github.io/blob/main/.github/scripts/redirects-sync.py) sends
-  after the production deploy (`jekyll.yml`) and after each preview deploy
-  (`pr-preview.yml`), and which this repo's CI sends after deploying. Add
-  `?list=wafer_space` or `?list=preview_wafer_space` to sync one list, and
-  `?force=1` to rewrite lists that haven't changed. The response is a JSON
-  summary, with HTTP 502 if any list failed.
+- Every 5 minutes, on a cron trigger, for both lists.
+- On `POST /sync?list=<name>&number=<n>&commit=<sha>` with
+  `Authorization: Bearer <SYNC_SECRET>`, which the site's deploy workflows
+  send after each deploy, with the revision they deployed. `number` and
+  `commit` are optional; `force=1` replaces the list even if it isn't older.
 
-## What a run does
+The Worker never retries. Its answers:
 
-For each list in turn (only one bulk list operation may be pending per
-account):
-
-1. Fetch the source files, bypassing caches.
-2. Hash them. If the hash and the item count match the ones recorded in the
-   list's description, stop: nothing changed. This keeps the frequent runs
-   cheap.
-3. Otherwise parse and check every entry strictly (hostname, no scheme or
-   query string in the source, an http(s) target, a 3xx status, no duplicate
-   sources). Any problem, a failed fetch, or an empty production file leaves
-   the list exactly as it is.
-4. Check the total against the account limit of 10,000 redirects.
-5. Replace the list's items (retrying while another bulk operation is
-   pending), wait for the operation to finish, then record the new hash.
-
-A preview listed in `previews.json` whose `redirects.json` is missing is
-skipped with a note. Each run must fit in the Workers Free plan's 50
-subrequests and 10 ms of CPU, so a run handles at most `MAX_PREVIEWS`
-previews (`src/sync.js`) and fails clearly beyond that.
+| Status | `status` | Meaning |
+| --- | --- | --- |
+| 200 | `applied` | The list now holds the file's revision. |
+| 200 | `up_to_date`, `list_is_newer` | Nothing to do. |
+| 202 | `pending` | Cloudflare accepted the write but hadn't finished it when the Worker stopped waiting. |
+| 409 | `not_published` | The site doesn't serve the requested revision yet: retry. |
+| 409 | `commit_mismatch` | The site serves a different commit at the requested number. |
+| 503 | `busy` | Another bulk operation is pending: retry. |
+| 502 | `error`, `failed` | The file couldn't be fetched or has no revision item first, or Cloudflare's operation failed. |
 
 ## Code
 
-- `src/redirects.js`: parsing, validation, the preview rewrite, the hash.
-  Pure functions.
-- `src/sync.js`: one run of the sync.
+- `src/sync.js`: one sync of one list.
 - `src/cloudflare.js`: the Cloudflare Lists API and file fetches.
 - `src/index.js`: the Worker's `fetch` and `scheduled` handlers.
 
@@ -110,13 +127,11 @@ This repository (Settings > Secrets and variables > Actions):
 - Secret `CLOUDFLARE_WORKERS_TOKEN`: an API token with Account > Workers
   Scripts > Edit, used to deploy.
 - Variable `CLOUDFLARE_ACCOUNT_ID`.
-- Variable `REDIRECTS_SYNC_URL`: the Worker's workers.dev URL.
-- Secret `REDIRECTS_SYNC_SECRET`.
 
-`wafer-space/wafer-space.github.io` needs only the variable
-`REDIRECTS_SYNC_URL` and the secret `REDIRECTS_SYNC_SECRET`. Without them (as
-on PRs from forks) its workflows skip the sync, and the cron trigger catches
-up.
+`wafer-space/wafer-space.github.io` has the variable `REDIRECTS_SYNC_URL`
+(the Worker's workers.dev URL) and the secret `REDIRECTS_SYNC_SECRET`. Without
+them (as on PRs from forks) its workflows skip the sync, and the cron trigger
+catches up.
 
 ## Checking it
 
@@ -124,6 +139,7 @@ up.
 curl -sI https://wafer.space/about.html          # 301, location: https://wafer.space/about
 curl -sI 'https://wafer.space/about.html?x=1'    # 301, location keeps ?x=1
 curl -sI https://wafer.space/about               # 200
+curl -sI https://wafer.space/revision            # 302 to the commit the list came from
 curl -sI https://preview.wafer.space/pr-NNN/about.html  # 302 -> /pr-NNN/about
 ```
 
