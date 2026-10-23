@@ -1,6 +1,6 @@
 # Test the Worker on pull requests and pushes, and deploy it from main.
 #
-# Setup required (see README.md):
+# Setup required (see SETUP.md; scripts/setup.py sets these):
 # - Secret CLOUDFLARE_WORKERS_TOKEN: an API token with Account > Workers
 #   Scripts > Edit, used only to deploy the Worker.
 # - Variable CLOUDFLARE_ACCOUNT_ID: the Cloudflare account to deploy to.
@@ -38,6 +38,9 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+      - name: Test the setup script
+        run: python3 -m unittest discover -s scripts -v
 
       - name: Check the Worker bundles
         run: npx wrangler deploy --dry-run --outdir dist
