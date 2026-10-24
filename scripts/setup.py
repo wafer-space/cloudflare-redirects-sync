@@ -386,18 +386,28 @@ class Setup:
                     self.cf.call("DELETE", f"{self.account}/tokens/{t['id']}")))
 
     def check_worker(self, sync_secret):
-        """Ask the new Worker what each list holds; workers.dev can take a minute to start serving it."""
+        """Ask the new Worker what each list holds.
+
+        workers.dev can take a minute to serve a new Worker, and several to
+        issue the certificate for a new subdomain (until then the TLS
+        handshake fails), so connection errors are retried too.
+        """
         self.log("Checking the Worker")
         for name in LISTS:
             url = f"{WORKER_URL}/list?{urllib.parse.urlencode({'list': name})}"
-            for attempt in range(12):
-                status, raw = self.send("GET", url, None, {"Authorization": f"Bearer {sync_secret}"})
-                if status == 200 or attempt == 11:
+            for attempt in range(30):
+                try:
+                    status, raw = self.send("GET", url, None, {"Authorization": f"Bearer {sync_secret}"})
+                    failure = f"HTTP {status}: {raw.decode('utf-8', 'replace')[:300]}"
+                except urllib.error.URLError as err:
+                    status, failure = None, str(err.reason)
+                if status == 200 or attempt == 29:
                     break
-                self.sleep(10)
-            body = raw.decode("utf-8", "replace")
+                self.sleep(20)
             if status != 200:
-                raise SystemExit(f"GET {url}: HTTP {status}: {body[:300]}")
+                raise SystemExit(f"GET {url}: {failure}\nEverything else is set up. Once the Worker answers, "
+                                 "run again with --apply --rotate to check it: SYNC_SECRET can't be read back.")
+            body = raw.decode("utf-8", "replace")
             self.ok(f"GET /list?list={name}: {body[:200]}")
 
     @staticmethod

@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import unittest
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
@@ -249,6 +250,36 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("SYNC_SECRET", fake.worker_secrets)
         self.assertFalse((setup.ROOT / "tmp" / "worker-secrets.json").exists())
+
+    def test_worker_check_waits_for_the_certificate(self):
+        fake = Fake()
+        real_send = fake.send
+        handshakes = []
+
+        def send(method, url, *a):
+            if "workers.dev" in url and len(handshakes) < 3:
+                handshakes.append(url)
+                raise urllib.error.URLError("ssl/tls alert handshake failure")
+            return real_send(method, url, *a)
+
+        fake.send = send
+        s, log = make(fake, apply=True)
+        s.run_all()
+        self.assertEqual(len(handshakes), 3)
+        self.assertIn("ok: GET /list?list=preview_wafer_space", "\n".join(log))
+
+    def test_worker_check_failure_says_how_to_recover(self):
+        fake = Fake()
+        real_send = fake.send
+
+        def send(method, url, *a):
+            if "workers.dev" in url:
+                raise urllib.error.URLError("ssl/tls alert handshake failure")
+            return real_send(method, url, *a)
+
+        fake.send = send
+        with self.assertRaisesRegex(SystemExit, "handshake failure\n.*--apply --rotate"):
+            make(fake, apply=True)[0].run_all()
 
     def test_rotate_keeps_old_tokens_if_the_worker_check_fails(self):
         fake = Fake()
