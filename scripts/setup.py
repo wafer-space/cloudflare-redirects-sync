@@ -12,7 +12,8 @@ and, with --apply, creates or changes what's missing:
 2. the redirect lists wafer_space and preview_wafer_space;
 3. the account's http_request_redirect ruleset, with a rule for each list;
 4. preview.wafer.space proxied through Cloudflare;
-5. a cache rule that bypasses the cache for preview.wafer.space;
+5. rules for preview.wafer.space that bypass the cache and turn off Email
+   Obfuscation, so previews are served as GitHub Pages builds them;
 6. two account API tokens: one the Worker uses to replace the lists, and one
    GitHub Actions uses to deploy the Worker;
 7. the Worker, deployed from this checkout with its secrets (CF_API_TOKEN,
@@ -51,7 +52,7 @@ LISTS = {
     "wafer_space": "Redirects for wafer.space, loaded by the redirects Worker",
     "preview_wafer_space": "Redirects for preview.wafer.space, loaded by the redirects Worker",
 }
-CACHE_EXPRESSION = f'(http.host eq "{PREVIEW_HOST}")'
+PREVIEW_EXPRESSION = f'(http.host eq "{PREVIEW_HOST}")'
 WORKER_REPO = "wafer-space/cloudflare-redirects-sync"
 SITE_REPO = "wafer-space/wafer-space.github.io"
 ACCOUNT_SCOPE = "com.cloudflare.api.account"
@@ -142,9 +143,19 @@ def redirect_rule(name):
 
 CACHE_RULE = {
     "description": f"Don't cache {PREVIEW_HOST}: previews change on every push",
-    "expression": CACHE_EXPRESSION,
+    "expression": PREVIEW_EXPRESSION,
     "action": "set_cache_settings",
     "action_parameters": {"cache": False},
+    "enabled": True,
+}
+
+# Email Obfuscation rewrites mailto: links to /cdn-cgi/l/email-protection,
+# which the previews' link checker reports as broken
+CONFIG_RULE = {
+    "description": f"Serve {PREVIEW_HOST} as GitHub Pages builds it: no Email Obfuscation",
+    "expression": PREVIEW_EXPRESSION,
+    "action": "set_config",
+    "action_parameters": {"email_obfuscation": False},
     "enabled": True,
 }
 
@@ -266,19 +277,30 @@ class Setup:
             self.change(f"proxy {PREVIEW_HOST} ({record.get('type')} {record.get('content')}) through Cloudflare",
                         lambda: self.cf.call("PATCH", f"/zones/{zone}/dns_records/{record['id']}", {"proxied": True}))
 
+    def preview_rule(self, zone, phase, kind, rule, what):
+        """Make sure the zone's `phase` ruleset has `rule`, which does `what`."""
+        path = f"/zones/{zone}/rulesets/phases/{phase}/entrypoint"
+        ruleset = self.cf.result("GET", path, missing_ok=True)
+        params = rule["action_parameters"].items()
+        if ruleset is None:
+            self.change(f"create the zone's {kind} with one that {what}",
+                        lambda: self.cf.call("PUT", path, {"rules": [rule]}))
+        elif any(r.get("expression") == rule["expression"] and r.get("action") == rule["action"]
+                 and (r.get("action_parameters") or {}).items() >= params for r in ruleset.get("rules") or []):
+            self.ok(what)
+        else:
+            # Appended, so it comes after (and wins over) any other rule
+            self.change(f"add a rule that {what} to ruleset {ruleset['id']}", lambda: self.cf.call(
+                "POST", f"/zones/{zone}/rulesets/{ruleset['id']}/rules", rule))
+
     def preview_cache_rule(self, zone):
         self.log(f"Cache rule for {PREVIEW_HOST}")
-        path = f"/zones/{zone}/rulesets/phases/http_request_cache_settings/entrypoint"
-        ruleset = self.cf.result("GET", path, missing_ok=True)
-        if ruleset is None:
-            self.change("create the zone's cache rules with one that bypasses the cache",
-                        lambda: self.cf.call("PUT", path, {"rules": [CACHE_RULE]}))
-        elif any(rule.get("expression") == CACHE_EXPRESSION for rule in ruleset.get("rules") or []):
-            self.ok("bypasses the cache")
-        else:
-            # Appended, so it comes after (and wins over) any rule that caches
-            self.change(f"add a rule that bypasses the cache to ruleset {ruleset['id']}", lambda: self.cf.call(
-                "POST", f"/zones/{zone}/rulesets/{ruleset['id']}/rules", CACHE_RULE))
+        self.preview_rule(zone, "http_request_cache_settings", "cache rules", CACHE_RULE, "bypasses the cache")
+
+    def preview_config_rule(self, zone):
+        self.log(f"Configuration rule for {PREVIEW_HOST}")
+        self.preview_rule(zone, "http_config_settings", "configuration rules", CONFIG_RULE,
+                          "turns off Email Obfuscation")
 
     def tokens(self):
         """{kind: new token value (None if not created)} and {kind: old tokens to delete}."""
@@ -433,6 +455,7 @@ class Setup:
         zone = self.needs(f"Zone (Read) {zone_policy}", self.find_zone)
         self.needs(f"DNS (Edit) {zone_policy}", self.preview_proxied, zone)
         self.needs(f"Cache Settings (Edit) {zone_policy}", self.preview_cache_rule, zone)
+        self.needs(f"Config Settings (Edit) {zone_policy}", self.preview_config_rule, zone)
         created, old = self.needs(f"Account API Tokens (Edit) {account}", self.tokens)
         # SYNC_SECRET goes in the Worker with the lists token, so it is
         # replaced whenever that is

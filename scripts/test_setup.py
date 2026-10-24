@@ -31,6 +31,7 @@ class Fake:
         self.lists = []
         self.redirect_ruleset = None
         self.cache_ruleset = None
+        self.config_ruleset = None
         self.dns = {"id": "rec1", "type": "CNAME", "content": "wafer-space.github.io", "proxied": False, "proxiable": True}
         self.tokens = []
         self.groups = list(GROUPS)
@@ -113,6 +114,14 @@ class Fake:
             case "POST", p if self.cache_ruleset and p == f"{z}/rulesets/{self.cache_ruleset['id']}/rules":
                 self.cache_ruleset["rules"].append(body)
                 return 200, self.cache_ruleset
+            case "GET", p if p == f"{z}/rulesets/phases/http_config_settings/entrypoint":
+                return (404, None) if self.config_ruleset is None else (200, self.config_ruleset)
+            case "PUT", p if p == f"{z}/rulesets/phases/http_config_settings/entrypoint":
+                self.config_ruleset = {"id": self.new_id("cfg"), "rules": body["rules"]}
+                return 200, self.config_ruleset
+            case "POST", p if self.config_ruleset and p == f"{z}/rulesets/{self.config_ruleset['id']}/rules":
+                self.config_ruleset["rules"].append(body)
+                return 200, self.config_ruleset
             case "GET", p if p == f"{a}/tokens/permission_groups":
                 return 200, self.groups
             case "GET", p if p == f"{a}/tokens":
@@ -183,6 +192,7 @@ class SetupTest(unittest.TestCase):
                          "would create the ruleset with a rule for each list",
                          "would proxy preview.wafer.space",
                          "would create the zone's cache rules",
+                         "would create the zone's configuration rules with one that turns off Email Obfuscation",
                          "would create the token 'redirects Worker: replace the redirect lists' with Account Rule Lists Write",
                          "would deploy the Worker",
                          "would set the wafer-space/cloudflare-redirects-sync secret CLOUDFLARE_WORKERS_TOKEN",
@@ -206,6 +216,8 @@ class SetupTest(unittest.TestCase):
         self.assertTrue(fake.dns["proxied"])
         self.assertEqual(fake.cache_ruleset["rules"][0]["action_parameters"], {"cache": False})
         self.assertEqual(fake.cache_ruleset["rules"][0]["expression"], '(http.host eq "preview.wafer.space")')
+        self.assertEqual(fake.config_ruleset["rules"], [setup.CONFIG_RULE])
+        self.assertEqual(fake.config_ruleset["rules"][0]["action_parameters"], {"email_obfuscation": False})
 
         lists_token, deploy_token = fake.tokens
         self.assertEqual(lists_token["policies"][0]["permission_groups"], [{"id": "g-lists"}])
@@ -333,13 +345,18 @@ class SetupTest(unittest.TestCase):
         other = {"expression": "true", "action": "redirect", "action_parameters": {"from_list": {"name": "other"}}}
         fake.redirect_ruleset = {"id": "rs-old", "phase": "http_request_redirect", "rules": [other]}
         fake.cache_ruleset = {"id": "crs-old", "rules": [{"expression": "true", "action": "set_cache_settings"}]}
+        # A rule for the same host that sets something else doesn't count
+        same_host = {"expression": setup.PREVIEW_EXPRESSION, "action": "set_config",
+                     "action_parameters": {"rocket_loader": False}}
+        fake.config_ruleset = {"id": "cfg-old", "rules": [same_host]}
         make(fake, apply=True)[0].run_all()
         self.assertEqual(fake.redirect_ruleset["rules"][0], other)
         self.assertEqual(len(fake.redirect_ruleset["rules"]), 3)
         self.assertEqual(fake.cache_ruleset["rules"][-1]["action_parameters"], {"cache": False})
+        self.assertEqual(fake.config_ruleset["rules"], [same_host, setup.CONFIG_RULE])
         self.assertIn(("POST", f"/accounts/{ACCOUNT}/rulesets/rs-old/rules"), fake.writes)
-        self.assertNotIn(("PUT", f"/zones/{ZONE_ID}/rulesets/phases/http_request_cache_settings/entrypoint"),
-                         fake.writes)
+        for phase in ["http_request_cache_settings", "http_config_settings"]:
+            self.assertNotIn(("PUT", f"/zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"), fake.writes)
 
     def test_rotate_replaces_tokens_and_deletes_old_ones(self):
         fake = Fake()

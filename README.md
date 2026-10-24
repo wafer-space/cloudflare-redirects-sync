@@ -106,8 +106,8 @@ tests on pull requests and pushes, and deploys the Worker from `main`.
 ## Setup
 
 [SETUP.md](SETUP.md) lists everything the Worker needs (the workers.dev
-subdomain, the two lists and their rules, the preview hostname's proxy and
-cache rule, and the tokens and secrets, each with only the permission it
+subdomain, the two lists and their rules, the preview hostname's proxy,
+cache and configuration rules, and the tokens and secrets, each with only the permission it
 needs) and how to set it up with [`scripts/setup.py`](scripts/setup.py),
 which takes one short-lived Cloudflare token and does the rest:
 

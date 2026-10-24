@@ -17,6 +17,7 @@ In the Cloudflare account that has the `wafer.space` zone:
 | The account's `http_request_redirect` ruleset, with a rule per list (`http.request.full_uri in $wafer_space`, ...) | Applies the lists to requests. Bulk Redirects only apply to proxied hostnames. |
 | `preview.wafer.space` proxied through Cloudflare | So the preview list applies. `wafer.space` already is. The script doesn't change `www.preview.wafer.space`. |
 | A cache rule bypassing the cache for `http.host eq "preview.wafer.space"` | GitHub Pages sends `max-age=600`, and previews change on every push. |
+| A configuration rule turning off Email Obfuscation for the same hostname | So previews are served as GitHub Pages builds them: Email Obfuscation rewrites `mailto:` links to `/cdn-cgi/l/email-protection`, which the previews' link checker reports as broken. |
 | The Worker, deployed with its secrets | See below. |
 
 The tokens and secrets, each with only the permission it needs:
@@ -66,6 +67,7 @@ Create Token > Create Custom Token**, and give it:
   | The `wafer.space` zone (Include, Specific zone) | Zone | Read | Finding the zone |
   | | DNS | Edit | Proxying `preview.wafer.space` |
   | | Cache Settings | Edit | The cache rule |
+  | | Config Settings | Edit | The configuration rule |
 
   Once saved, the token's summary and Cloudflare's API show Edit as Write
   (for example "Account Rule Lists Write"). Some of Cloudflare's docs use
@@ -149,11 +151,13 @@ Everything the script does can be done in the dashboard instead:
 4. **`wafer.space` > DNS:** turn on the proxy for `preview.wafer.space`.
 5. **`wafer.space` > Caching > Cache Rules:** a rule for hostname equals
    `preview.wafer.space` that bypasses the cache.
-6. **Manage Account > Account API Tokens:** create the two tokens in the table
+6. **`wafer.space` > Rules > Configuration Rules:** a rule for the same
+   hostname that turns Email Obfuscation off.
+7. **Manage Account > Account API Tokens:** create the two tokens in the table
    above.
-7. From this repository, with `CLOUDFLARE_API_TOKEN` set to the deploy token,
+8. From this repository, with `CLOUDFLARE_API_TOKEN` set to the deploy token,
    `npx wrangler deploy`, then `npx wrangler secret put` for each of
    `CF_API_TOKEN`, `CF_ACCOUNT_ID` and `SYNC_SECRET` (`openssl rand -base64 32`
    makes a good one).
-8. **GitHub:** set the secrets and variables in the table above, under each
+9. **GitHub:** set the secrets and variables in the table above, under each
    repository's **Settings > Secrets and variables > Actions**.
