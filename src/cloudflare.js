@@ -38,7 +38,9 @@ export class CloudflareApi {
     if (!accountId) throw new Error("CF_ACCOUNT_ID is not set");
     this.token = token;
     this.accountId = accountId;
-    this.fetch = fetch;
+    // Called as a plain function: the Workers runtime's fetch throws
+    // "Illegal invocation" when `this` is anything but the global scope
+    this.fetch = (...args) => fetch(...args);
   }
 
   // `body` is sent as is when it's a string (a redirects.json file), and as

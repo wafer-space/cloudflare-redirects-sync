@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { handleRequest, runScheduled } from "../src/index.js";
+import { CloudflareApi } from "../src/cloudflare.js";
 import { fileRevision, parseRevision } from "../src/sync.js";
 
 const ACCOUNT = "acct123";
@@ -361,4 +362,14 @@ test("a cron run reports a failing list without stopping the other", async () =>
   const results = await runScheduled(ENV, { fetch: fake.fetch, wait: noWait });
   assert.equal(results.wafer_space.http, 502);
   assert.equal(results.preview_wafer_space.status, "applied");
+});
+
+test("the API client calls fetch as a plain function, as the Workers runtime requires", async () => {
+  // Like the runtime's fetch, which throws "Illegal invocation" for any other `this`
+  function strictFetch() {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    throw new Error("fetched");
+  }
+  const api = new CloudflareApi({ token: "t", accountId: ACCOUNT, fetch: strictFetch });
+  await assert.rejects(api.request("GET", "/rules/lists"), /fetched/);
 });
