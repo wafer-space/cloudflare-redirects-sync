@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -250,6 +251,29 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("SYNC_SECRET", fake.worker_secrets)
         self.assertFalse((setup.ROOT / "tmp" / "worker-secrets.json").exists())
+
+    def test_send_names_itself(self):
+        # workers.dev refuses urllib's default User-Agent
+        sent = []
+
+        class Response:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def read(self):
+                return b"{}"
+
+        def urlopen(request, timeout):
+            sent.append(request)
+            return Response()
+
+        with unittest.mock.patch("urllib.request.urlopen", urlopen):
+            self.assertEqual(setup.send("GET", "https://example.com/", headers={"Authorization": "Bearer x"}),
+                             (200, b"{}"))
+        self.assertEqual(sent[0].get_header("User-agent"), "wafer-space/cloudflare-redirects-sync/scripts/setup.py")
+        self.assertEqual(sent[0].get_header("Authorization"), "Bearer x")
 
     def test_worker_check_waits_for_the_certificate(self):
         fake = Fake()

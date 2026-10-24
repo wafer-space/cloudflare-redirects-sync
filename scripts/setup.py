@@ -81,7 +81,10 @@ class CloudflareError(Exception):
 
 def send(method, url, data=None, headers=None):
     """(status, body bytes) for one HTTP request."""
-    request = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    # Cloudflare's Browser Integrity Check refuses urllib's default
+    # User-Agent on workers.dev ("error code: 1010")
+    headers = {"User-Agent": f"{WORKER_REPO}/scripts/setup.py", **(headers or {})}
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.status, response.read()
