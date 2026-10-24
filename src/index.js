@@ -1,33 +1,22 @@
-// redirects-sync: keeps the wafer_space and preview_wafer_space
-// Bulk Redirect lists in sync with the redirects.json files the sites serve.
-// Runs on a cron trigger, and on POST /sync from the deploy workflows.
+// redirects: loads the redirects.json files that wafer.space and
+// preview.wafer.space serve into the wafer_space and preview_wafer_space
+// Bulk Redirect lists. Runs on a cron trigger, and on requests from the
+// deploy workflows:
 //
-// Secrets: CF_API_TOKEN (Account Filter Lists Edit), CF_ACCOUNT_ID, and
-// SYNC_SECRET (the bearer token POST /sync must send).
+//   GET  /source?list=<name>  the revision the site's redirects.json records
+//   GET  /list?list=<name>    the revision the Cloudflare list holds
+//   POST /sync?list=<name>    both, then replace the list if the site's
+//                             revision is newer ([&force=1]: even if not)
+//
+// Every request needs `Authorization: Bearer <SYNC_SECRET>`.
+//
+// Secrets: CF_API_TOKEN (Account Rule Lists Write), CF_ACCOUNT_ID, and
+// SYNC_SECRET.
 
-import { CloudflareApi, SubrequestBudget, fetchText } from "./cloudflare.js";
-import { LIST_NAMES, syncLists } from "./sync.js";
+import { CloudflareApi } from "./cloudflare.js";
+import { LISTS, listRevision, sourceRevision, syncList } from "./sync.js";
 
-// Workers Free plan: 50 subrequests per invocation.
-const SUBREQUEST_LIMIT = 50;
-
-export async function runSync(env, { names, force } = {}, { fetch = globalThis.fetch, wait } = {}) {
-  const budget = new SubrequestBudget(SUBREQUEST_LIMIT);
-  let api;
-  try {
-    api = new CloudflareApi({ token: env.CF_API_TOKEN, accountId: env.CF_ACCOUNT_ID, budget, fetch });
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-  const result = await syncLists({
-    api,
-    fetchText: (url) => fetchText(url, { budget, fetch }),
-    names,
-    force,
-    wait,
-  });
-  return { ...result, subrequests: budget.used };
-}
+const json = (body, status, headers) => Response.json(body, { status, headers });
 
 async function sha256(text) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
@@ -43,28 +32,50 @@ async function secretMatches(given, expected) {
   return diff === 0;
 }
 
-const json = (body, status) => Response.json(body, { status });
+function makeApi(env, fetch) {
+  return new CloudflareApi({ token: env.CF_API_TOKEN, accountId: env.CF_ACCOUNT_ID, fetch });
+}
 
-export async function handleRequest(request, env, deps) {
+const ROUTES = {
+  "/source": { method: "GET", run: (name, deps) => sourceRevision(name, deps) },
+  "/list": { method: "GET", run: (name, deps) => listRevision(name, { api: deps.api() }) },
+  "/sync": { method: "POST", run: (name, deps) => syncList(name, { ...deps, api: deps.api() }) },
+};
+
+export async function handleRequest(request, env, { fetch = globalThis.fetch, wait } = {}) {
   const url = new URL(request.url);
-  if (url.pathname !== "/sync") return json({ error: "not found" }, 404);
-  if (request.method !== "POST") {
-    return new Response(JSON.stringify({ error: "use POST" }), {
-      status: 405,
-      headers: { allow: "POST", "content-type": "application/json" },
-    });
+  const route = ROUTES[url.pathname];
+  if (!route) return json({ error: "not found" }, 404);
+  if (request.method !== route.method) {
+    return json({ error: `use ${route.method}` }, 405, { allow: route.method });
   }
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
   if (!(await secretMatches(token, env.SYNC_SECRET))) return json({ error: "unauthorized" }, 401);
 
-  const list = url.searchParams.get("list");
-  if (list !== null && !LIST_NAMES.includes(list)) {
-    return json({ error: `list must be one of ${LIST_NAMES.join(", ")}` }, 400);
+  const name = url.searchParams.get("list");
+  if (!Object.hasOwn(LISTS, name ?? "")) {
+    return json({ error: `list must be one of ${Object.keys(LISTS).join(", ")}` }, 400);
   }
-  const force = url.searchParams.get("force") === "1";
-  const result = await runSync(env, { names: list ? [list] : LIST_NAMES, force }, deps);
-  return json(result, result.ok ? 200 : 502);
+  let status, body;
+  try {
+    const deps = { fetch, wait, force: url.searchParams.get("force") === "1", api: () => makeApi(env, fetch) };
+    [status, body] = await route.run(name, deps);
+  } catch (err) {
+    [status, body] = [500, { status: "error", error: err.message }];
+  }
+  return json({ name, ...body }, status);
+}
+
+export async function runScheduled(env, { fetch = globalThis.fetch, wait } = {}) {
+  const api = makeApi(env, fetch);
+  const results = {};
+  // One after another: only one bulk operation may be pending per account.
+  for (const name of Object.keys(LISTS)) {
+    const [status, body] = await syncList(name, { api, fetch, wait });
+    results[name] = { http: status, ...body };
+  }
+  return results;
 }
 
 export default {
@@ -73,9 +84,12 @@ export default {
   },
 
   async scheduled(controller, env) {
-    const result = await runSync(env);
-    console.log(JSON.stringify(result));
-    // Throwing marks the cron run as failed in the Workers dashboard.
-    if (!result.ok) throw new Error("redirects sync failed; see the log line above");
+    const results = await runScheduled(env);
+    console.log(JSON.stringify(results));
+    // Throwing marks the run as failed in the Workers dashboard. A busy or
+    // not-yet-finished write isn't a failure: the next run picks it up.
+    if (Object.values(results).some((r) => r.http >= 500 && r.status !== "busy")) {
+      throw new Error("redirects sync failed; see the log line above");
+    }
   },
 };

@@ -1,11 +1,9 @@
 # Test the Worker on pull requests and pushes, and deploy it from main.
 #
-# Setup required (see README.md):
-# - Secret CLOUDFLARE_WORKERS_TOKEN: an API token with Account > Workers
-#   Scripts > Edit, used only to deploy the Worker.
+# Setup required (see SETUP.md; scripts/setup.py sets these):
+# - Secret CLOUDFLARE_WORKERS_TOKEN: an account API token with only Workers
+#   Scripts Write, used only to deploy the Worker.
 # - Variable CLOUDFLARE_ACCOUNT_ID: the Cloudflare account to deploy to.
-# - Variable REDIRECTS_SYNC_URL and secret REDIRECTS_SYNC_SECRET: where to
-#   reach the Worker, used to re-sync after deploying.
 name: CI
 
 on:
@@ -41,6 +39,9 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Test the setup script
+        run: python3 -m unittest discover -s scripts -v
+
       - name: Check the Worker bundles
         run: npx wrangler deploy --dry-run --outdir dist
 
@@ -66,14 +67,3 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-
-      # The new code may build the lists differently from the same files, so
-      # rewrite them even where the files haven't changed.
-      - name: Re-sync all lists
-        run: >-
-          curl --fail-with-body --silent --show-error --max-time 300
-          -X POST -H "Authorization: Bearer ${REDIRECTS_SYNC_SECRET}"
-          "${REDIRECTS_SYNC_URL}/sync?force=1"
-        env:
-          REDIRECTS_SYNC_URL: ${{ vars.REDIRECTS_SYNC_URL }}
-          REDIRECTS_SYNC_SECRET: ${{ secrets.REDIRECTS_SYNC_SECRET }}

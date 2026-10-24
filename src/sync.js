@@ -1,167 +1,147 @@
-// Bring each Bulk Redirect list in line with the redirects.json files the
-// sites currently serve. Every run rebuilds a list from scratch, so whichever
-// run (cron or a deploy's ping) writes last leaves it correct.
+// The three operations behind the Worker's endpoints, for one list:
+//
+// - sourceRevision: fetch the redirects.json the site serves and return the
+//   revision it records;
+// - listRevision: return the revision the Cloudflare list holds;
+// - syncList: do both, and replace the list with the file when the file's
+//   revision is newer.
+//
+// The only state is the list itself. The first item of every redirects.json
+// is its revision: source <host>/revision, target the commit on GitHub, and
+// a comment starting with `git describe` (v0.0-<number>...). It is written in
+// the same replace as the redirects, so the list's own copy always says which
+// revision the list holds. A file whose number isn't higher than that is
+// never written, so a late, cached or out-of-order copy can't replace a newer
+// one.
+//
+// Nothing here retries: when another bulk operation is pending the caller
+// gets an error status and retries (the deploy workflows do; the cron
+// trigger simply runs again).
 
-import { NotFoundError } from "./cloudflare.js";
-import {
-  ValidationError,
-  buildPreviewItems,
-  describeList,
-  inputDigest,
-  parseDescription,
-  parseJson,
-  parsePreviewIndex,
-  parseRedirects,
-  sortItems,
-} from "./redirects.js";
+import { fetchText } from "./cloudflare.js";
 
-export const PRODUCTION_URL = "https://wafer.space/redirects.json";
-export const PREVIEW_ROOT = "https://preview.wafer.space";
+export const LISTS = {
+  wafer_space: { url: "https://wafer.space/redirects.json", host: "wafer.space" },
+  preview_wafer_space: { url: "https://preview.wafer.space/redirects.json", host: "preview.wafer.space" },
+};
 
-// Lists in the order they're synced; production first, so it gets the
-// subrequest budget before the previews do.
-export const LIST_NAMES = ["wafer_space", "preview_wafer_space"];
+// Waits before each status check of the bulk operation, in milliseconds.
+export const POLL_DELAYS = [1000, 2000, 4000, 8000];
 
-// The Free plan allows 10,000 URL redirects across all lists. Stop well short
-// of that rather than let Cloudflare reject or truncate a write.
-export const MAX_TOTAL_REDIRECTS = 9000;
+const COMMENT_RE = /^v\d+(?:\.\d+)*-(\d+)(?:\b|$)/;
+const COMMIT_RE = /\/commit\/([0-9a-f]{40})$/;
 
-// Each preview costs one subrequest and some CPU time (the Free plan allows
-// 10 ms per run), and a run must leave enough of the 50 subrequests for the
-// API calls; see the budget in index.js.
-export const MAX_PREVIEWS = 15;
+// The revision an item records, or null if it isn't a revision item for host.
+export function parseRevision(item, host) {
+  const r = item?.redirect;
+  if (!r || r.source_url !== `${host}/revision`) return null;
+  const number = COMMENT_RE.exec(item.comment ?? "");
+  const commit = COMMIT_RE.exec(r.target_url ?? "");
+  if (!number || !commit) return null;
+  return { number: Number(number[1]), commit: commit[1], comment: item.comment };
+}
 
-// Waits between status checks of a bulk operation, and between retries when
-// another operation is still pending, in milliseconds.
-export const POLL_DELAYS = [1000, 2000, 4000, 8000, 15000];
-export const BUSY_RETRY_DELAYS = [5000, 10000, 20000];
+// The file's first item, cut out of its text so the rest (thousands of items
+// for the previews) is never parsed: the Free plan allows 10 ms of CPU. It
+// ends at the first "}" followed by "}" (its redirect's, then its own); any
+// other shape fails to parse and is reported as a file without a revision.
+const FIRST_ITEM_RE = /^\s*\[\s*(\{[\s\S]*?\}\s*\})/;
+
+export function fileRevision(text, host) {
+  const match = FIRST_ITEM_RE.exec(text);
+  try {
+    return match ? parseRevision(JSON.parse(match[1]), host) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Each operation returns [HTTP status, body] and never throws.
+async function guarded(run) {
+  try {
+    return await run();
+  } catch (err) {
+    return [500, { status: "error", error: err.message }];
+  }
+}
+
+// The site's file and its revision, or { error: [status, body] }.
+async function fetchSource(name, { fetch }) {
+  const { url, host } = LISTS[name];
+  let text;
+  try {
+    text = await fetchText(url, { fetch });
+  } catch (err) {
+    return { error: [502, { status: "error", error: err.message }] };
+  }
+  const revision = fileRevision(text, host);
+  if (!revision) return { error: [502, { status: "error", error: `${url} doesn't start with a ${host}/revision item` }] };
+  return { text, revision };
+}
+
+// The list's id and the revision its revision item records (or null).
+async function fetchList(name, { api }) {
+  const { host } = LISTS[name];
+  const list = (await api.listLists()).find((l) => l.name === name && l.kind === "redirect");
+  if (!list) throw new Error(`no redirect list named ${name}`);
+  const found = await api.searchItems(list.id, `${host}/revision`);
+  return { id: list.id, revision: found.map((item) => parseRevision(item, host)).find(Boolean) ?? null };
+}
+
+// GET /source
+export function sourceRevision(name, { fetch }) {
+  return guarded(async () => {
+    const source = await fetchSource(name, { fetch });
+    return source.error ?? [200, { status: "ok", source: source.revision }];
+  });
+}
+
+// GET /list
+export function listRevision(name, { api }) {
+  return guarded(async () => [200, { status: "ok", list: (await fetchList(name, { api })).revision }]);
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Each source has two steps: fetch the files a list is built from (cheap, and
-// enough to tell whether anything changed), then parse, check and turn them
-// into the list's items (only when something did).
-const SOURCES = {
-  wafer_space: {
-    async fetch({ fetchText }) {
-      return { files: { [PRODUCTION_URL]: await fetchText(PRODUCTION_URL) }, notes: [] };
-    },
-    build(files) {
-      const data = parseJson(files[PRODUCTION_URL], PRODUCTION_URL);
-      const items = sortItems(parseRedirects(data, { label: PRODUCTION_URL }));
-      // An empty production list is far more likely a broken build than intent.
-      if (items.length === 0) throw new ValidationError(`${PRODUCTION_URL} has no redirects`);
-      return items;
-    },
-  },
+// POST /sync
+export function syncList(name, { api, fetch, force = false, wait = sleep }) {
+  return guarded(async () => {
+    const source = await fetchSource(name, { fetch });
+    if (source.error) return source.error;
+    const { id, revision: current } = await fetchList(name, { api });
+    const result = { source: source.revision, list: current };
 
-  preview_wafer_space: {
-    async fetch({ fetchText }) {
-      const indexUrl = `${PREVIEW_ROOT}/previews.json`;
-      const dirs = parsePreviewIndex(parseJson(await fetchText(indexUrl), indexUrl));
-      if (dirs.length > MAX_PREVIEWS) {
-        throw new Error(`${dirs.length} previews have redirects, more than the ${MAX_PREVIEWS} one run can handle`);
+    if (!force && current) {
+      if (source.revision.number === current.number && source.revision.commit !== current.commit) {
+        return [409, { status: "commit_mismatch", ...result }];
       }
-      const notes = [];
-      const files = {};
-      const fetched = await Promise.all(
-        dirs.map(async (dir) => {
-          try {
-            return [dir, await fetchText(`${PREVIEW_ROOT}/${dir}/redirects.json`)];
-          } catch (err) {
-            // previews.json and the preview are deployed together, so this is a
-            // preview removed between the two reads; leave it out until next run.
-            if (err instanceof NotFoundError) {
-              notes.push(`${dir}: no redirects.json, skipped`);
-              return [dir, null];
-            }
-            throw err;
-          }
-        }),
-      );
-      for (const [dir, text] of fetched) if (text !== null) files[dir] = text;
-      return { files, notes };
-    },
-    build(files) {
-      const previews = {};
-      for (const [dir, text] of Object.entries(files)) {
-        previews[dir] = parseJson(text, `${dir}/redirects.json`);
+      if (source.revision.number <= current.number) {
+        return [200, { status: source.revision.number === current.number ? "up_to_date" : "list_is_newer", ...result }];
       }
-      return buildPreviewItems(previews);
-    },
-  },
-};
-
-async function replaceWhenFree(api, listId, items, wait) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await api.replaceItems(listId, items);
-    } catch (err) {
-      if (!err.isBusy || attempt >= BUSY_RETRY_DELAYS.length) throw err;
-      await wait(BUSY_RETRY_DELAYS[attempt]);
     }
-  }
-}
 
-async function waitForOperation(api, operationId, wait) {
-  for (const delay of POLL_DELAYS) {
-    await wait(delay);
-    const op = await api.getOperation(operationId);
-    if (op.status === "completed") return;
-    if (op.status === "failed") throw new Error(`bulk operation ${operationId} failed: ${op.error ?? "no error given"}`);
-  }
-  throw new Error(`bulk operation ${operationId} still not complete; the next run will retry`);
-}
-
-async function syncList(name, list, others, { api, fetchText, force, wait }) {
-  const source = SOURCES[name];
-  const { files, notes } = await source.fetch({ fetchText });
-  const digest = await inputDigest(
-    Object.entries(files)
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .flat(),
-  );
-  const noted = notes.length ? { notes } : {};
-  const recorded = parseDescription(list.description);
-  if (!force && recorded?.digest === digest && recorded.items === list.num_items) {
-    return { entries: list.num_items, changed: false, ...noted };
-  }
-  const items = source.build(files);
-  const total = items.length + others;
-  if (total > MAX_TOTAL_REDIRECTS) {
-    throw new Error(`${total} redirects across all lists would pass the limit of ${MAX_TOTAL_REDIRECTS}`);
-  }
-  const operationId = await replaceWhenFree(api, list.id, items, wait);
-  await waitForOperation(api, operationId, wait);
-  // Record the digest only once the items are in, so a failed run is retried.
-  await api.updateDescription(list.id, describeList(digest, items.length));
-  return { entries: items.length, changed: true, ...noted };
-}
-
-// Sync the named lists one after another (only one bulk operation may be
-// pending per account). A list whose sources fail to fetch or validate is
-// left exactly as it is.
-export async function syncLists({ api, fetchText, names = LIST_NAMES, force = false, wait = sleep }) {
-  const results = {};
-  let lists;
-  try {
-    lists = await api.listLists();
-  } catch (err) {
-    for (const name of names) results[name] = { error: err.message };
-    return { ok: false, lists: results };
-  }
-  const byName = new Map(lists.map((l) => [l.name, l]));
-  for (const name of names) {
-    const list = byName.get(name);
+    let operationId;
     try {
-      if (!list || list.kind !== "redirect") throw new Error(`no redirect list named ${name}`);
-      const others = lists
-        .filter((l) => l.kind === "redirect" && l.name !== name)
-        .reduce((sum, l) => sum + (l.num_items ?? 0), 0);
-      results[name] = await syncList(name, list, others, { api, fetchText, force, wait });
+      operationId = await api.replaceItems(id, source.text);
     } catch (err) {
-      results[name] = { error: err.message };
+      if (err.isBusy) return [503, { status: "busy", error: err.message, ...result }];
+      throw err;
     }
-  }
-  return { ok: Object.values(results).every((r) => !r.error), lists: results };
+    for (const delay of POLL_DELAYS) {
+      await wait(delay);
+      const op = await api.getOperation(operationId);
+      if (op.status === "failed") {
+        return [502, { status: "failed", error: op.error ?? "no error given", operation_id: operationId, ...result }];
+      }
+      if (op.status !== "completed") continue;
+      // Another sync may have written between this one's check and its
+      // write, so report what the list holds now, read back from Cloudflare.
+      const { revision: readback } = await fetchList(name, { api });
+      if (!readback) {
+        return [502, { status: "failed", error: "no revision item in the list after writing", ...result }];
+      }
+      return [200, { status: "applied", source: source.revision, list: readback, previous: current }];
+    }
+    return [202, { status: "pending", operation_id: operationId, ...result }];
+  });
 }
